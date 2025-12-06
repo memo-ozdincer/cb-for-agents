@@ -1,0 +1,18 @@
+{
+  "weblinx_count": 1000,
+  "webarena_tasks_count": 812,
+  "webarena_human_traces_count": 2,
+  "webarena_llm_traces_count": 810,
+  "tau2_domains_count": 2458,
+  "tau2_results_count": 26,
+  "ingestion_date": "2025-12-06T12:25:48.555279",
+  "database_path": "../data/db/unified.db",
+  "tables": [
+    "weblinx",
+    "webarena_tasks",
+    "webarena_human_traces",
+    "webarena_llm_traces",
+    "tau2_domains",
+    "tau2_results"
+  ]
+}
