@@ -5,7 +5,7 @@
 #SBATCH --time=06:00:00
 #SBATCH --output=%x_%j.out
 #SBATCH --error=%x_%j.err
-#SBATCH --account=def-XXXX  # TODO: Set your Trillium RAP (def-/rrg-/rpp-)
+#SBATCH --account=def-zhijing  # TODO: Set your Trillium RAP (def-/rrg-/rpp-)
 
 # =============================================================================
 # Circuit Breakers Training - Trillium 4×H100

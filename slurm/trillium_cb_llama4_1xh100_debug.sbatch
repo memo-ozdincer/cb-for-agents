@@ -5,7 +5,7 @@
 #SBATCH --time=00:30:00
 #SBATCH --output=%x_%j.out
 #SBATCH --error=%x_%j.err
-#SBATCH --account=def-XXXX  # TODO: Set your Trillium RAP
+#SBATCH --account=def-zhijing
 
 # =============================================================================
 # Circuit Breakers Debug/Smoke Test - Trillium 1×H100
