@@ -5,8 +5,8 @@
 #SBATCH --cpus-per-task=12
 #SBATCH --gpus=h100:1
 #SBATCH --time=00:15:00
-#SBATCH --output=%x_%j.out
-#SBATCH --error=%x_%j.err
+#SBATCH --output=logs/%x_%j.out
+#SBATCH --error=logs/%x_%j.err
 #SBATCH --account=def-zhijing  # TODO: set your RAC / def-* account
 
 # =============================================================================
@@ -20,6 +20,7 @@
 #
 # Recommended: submit from your SCRATCH clone:
 #   cd $HOME/scratch/harmful-agents-meta-dataset
+#   mkdir -p logs
 #   sbatch slurm/fir_cb_llama4_1xh100_debug.sbatch
 #
 # Notes:
@@ -51,6 +52,9 @@ if [[ -n "${SLURM_SUBMIT_DIR:-}" && -d "$SLURM_SUBMIT_DIR" ]]; then
 fi
 
 cd "$REPO_DIR"
+
+# Must exist before Slurm opens stdout/stderr files (see #SBATCH --output/--error).
+mkdir -p logs
 
 # --- Modules / environment ---
 # These are typical on Alliance clusters; adjust if Fir has different module names.

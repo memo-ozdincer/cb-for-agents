@@ -4,6 +4,29 @@ This directory contains SLURM batch scripts for training Circuit Breakers on dif
 
 ## Quick Start
 
+### Fir (Alliance) - 1×H100 (Smoke Test)
+
+1. **Setup** (on login node):
+```bash
+ssh fir.alliancecan.ca
+cd $HOME/scratch
+git clone <your-repo-url> harmful-agents-meta-dataset
+cd harmful-agents-meta-dataset
+bash scripts/hpc_setup_fir.sh
+```
+
+2. **Submit smoke test**:
+```bash
+cd $HOME/scratch/harmful-agents-meta-dataset
+sbatch slurm/fir_cb_llama4_1xh100_debug.sbatch
+```
+
+3. **Monitor** (outputs go to `logs/`):
+```bash
+squeue -u $USER
+tail -f logs/cb_llama4_1xh100_smoke_fir_JOBID.out
+```
+
 ### Trillium (Alliance/SciNet) - 4×H100
 
 1. **Setup** (on GPU login node):
@@ -76,7 +99,15 @@ tail -f logs/cb_llama4_4xh100_JOBID.out
 |--------|---------|------|------|---------|
 | `trillium_cb_llama4_4xh100.sbatch` | Trillium | 4×H100 | 6h | Full training |
 | `trillium_cb_llama4_1xh100_debug.sbatch` | Trillium | 1×H100 | 30min | Quick test |
+| `fir_cb_llama4_1xh100_debug.sbatch` | Fir | 1×H100 | 15min | Quick test |
 | `cslab_cb_llama4_4xh100.sbatch` | CSLab ML | 4×H100 | 6h | Full training |
+
+---
+
+## Where Slurm Outputs Go
+
+- If a script uses `#SBATCH --output=%x_%j.out` / `#SBATCH --error=%x_%j.err`, files are written in the directory you ran `sbatch` from.
+- If a script uses `#SBATCH --output=logs/%x_%j.out` / `#SBATCH --error=logs/%x_%j.err`, files are written under `logs/` in the directory you ran `sbatch` from (the folder must exist before submission).
 
 ---
 
