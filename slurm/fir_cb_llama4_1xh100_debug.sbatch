@@ -7,7 +7,7 @@
 #SBATCH --time=00:15:00
 #SBATCH --output=%x_%j.out
 #SBATCH --error=%x_%j.err
-#SBATCH --account=def-XXXX  # TODO: set your RAC / def-* account
+#SBATCH --account=def-zhijing  # TODO: set your RAC / def-* account
 
 # =============================================================================
 # Circuit Breakers Debug/Smoke Test - Fir 1×H100
