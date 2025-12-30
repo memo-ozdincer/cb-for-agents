@@ -7,8 +7,7 @@
 #SBATCH --time=01:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
-# TODO: Find your account with: sacctmgr show associations user=$USER
-#SBATCH --account=def-zhiji+
+#SBATCH --account=def-zhijing_gpu
 
 # =============================================================================
 # Circuit Breakers Environment Setup - Rorqual

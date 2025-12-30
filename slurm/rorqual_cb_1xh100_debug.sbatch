@@ -8,8 +8,7 @@
 #SBATCH --time=00:30:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
-# TODO: Find your account with: sacctmgr show associations user=$USER
-#SBATCH --account=def-zhiji+
+#SBATCH --account=def-zhijing_gpu
 
 # =============================================================================
 # Circuit Breakers Debug/Smoke Test - Rorqual 1×H100
