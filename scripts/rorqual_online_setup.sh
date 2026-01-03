@@ -26,6 +26,20 @@ VENV_DIR="${VENV_DIR:-$PROJECT_DIR/.venvs/cb_env}"
 CACHE_ROOT="${CACHE_ROOT:-$PROJECT_DIR/cb_cache}"
 HF_MODEL_ID="${HF_MODEL_ID:-meta-llama/Llama-3.1-8B-Instruct}"
 
+# pip/network tuning (login nodes can be flaky / rate-limited)
+PIP_RETRIES="${PIP_RETRIES:-10}"
+PIP_TIMEOUT="${PIP_TIMEOUT:-60}"
+
+# PyTorch wheel source (override if your site prefers a different CUDA build)
+TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu121}"
+
+# Set to 1 to force reinstall/upgrade torch+torchvision even if a CUDA build is detected.
+FORCE_TORCH_INSTALL="${FORCE_TORCH_INSTALL:-0}"
+
+uv_install() {
+  uv pip install "$@"
+}
+
 if [[ ! -d "$REPO_DIR" ]]; then
   echo "ERROR: REPO_DIR not found: $REPO_DIR"
   echo "Set REPO_DIR or PROJECT_DIR, then rerun."
@@ -62,18 +76,24 @@ source "$VENV_DIR/bin/activate"
 echo "Python: $(python -V)"
 
 echo "Upgrading packaging tools..."
-python -m pip install --upgrade pip setuptools wheel
+uv_install --upgrade pip setuptools wheel
 
 echo "Installing Python deps (requirements.txt)..."
-python -m pip install -r requirements.txt
+uv_install -r requirements.txt
 
-echo "Ensuring CUDA PyTorch wheels (cu121)..."
-python -m pip install --upgrade torch torchvision --index-url https://download.pytorch.org/whl/cu121
-
+echo "Checking torch installation..."
 python - <<'PY'
-import torch
-print("torch:", torch.__version__)
-print("cuda available:", torch.cuda.is_available())
+try:
+    import torch
+    print("torch:", torch.__version__)
+    print("torch.version.cuda:", torch.version.cuda)
+    print("cuda available:", torch.cuda.is_available())
+    print("✅ PyTorch is installed (assumed CUDA-enabled via UV)")
+except ImportError as e:
+    print("ERROR: torch not found. Install with UV or pip first:")
+    print("  uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121")
+    import sys
+    sys.exit(1)
 PY
 
 # --- Download model into HF cache ---
