@@ -2,19 +2,19 @@
 #SBATCH -A aip-rgrosse
 #SBATCH -D /project/6105522/memoozd/harmful-agents-meta-dataset
 #SBATCH --time=04:00:00
-#SBATCH --gres=gpu:h100:1
-#SBATCH --cpus-per-task=12
-#SBATCH --mem=64GB
-#SBATCH --job-name=cb_llama31_8b_1xh100_full
+#SBATCH --gres=gpu:h100:2
+#SBATCH --cpus-per-task=24
+#SBATCH --mem=128GB
+#SBATCH --job-name=cb_llama31_8b_2xh100_full
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 
 # =============================================================================
-# Circuit Breakers Training - Killarney 1×H100 (Llama-3.1-8B-Instruct)
+# Circuit Breakers Training - Killarney 2×H100 (Llama-3.1-8B-Instruct)
 # =============================================================================
 #
-# NOTE: Using 1×H100 because 4×H100 nodes are down
-# Full training (150 steps) on single GPU with increased gradient accumulation
+# Full training (150 steps) on 2×H100 GPUs (160GB total VRAM)
+# Distributed training with model sharding
 #
 # Submit from your project directory:
 #   cd /project/6105522/memoozd/harmful-agents-meta-dataset
