@@ -4,7 +4,7 @@
 #SBATCH --time=02:30:00
 #SBATCH --gres=gpu:l40s:4
 #SBATCH --cpus-per-task=32
-#SBATCH --mem=96GB
+#SBATCH --mem=128GB
 #SBATCH --job-name=cb_llama31_8b_4xl40s_full
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err

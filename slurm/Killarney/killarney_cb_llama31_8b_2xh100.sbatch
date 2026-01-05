@@ -1,25 +1,25 @@
 #!/bin/bash
 #SBATCH -A aip-rgrosse
 #SBATCH -D /project/6105522/memoozd/harmful-agents-meta-dataset
-#SBATCH --time=00:45:00
-#SBATCH --gres=gpu:h100:1
-#SBATCH --cpus-per-task=12
-#SBATCH --mem=64GB
-#SBATCH --job-name=cb_llama31_8b_1xh100_debug
+#SBATCH --time=02:30:00
+#SBATCH --gres=gpu:h100:2
+#SBATCH --cpus-per-task=24
+#SBATCH --mem=80GB
+#SBATCH --job-name=cb_llama31_8b_2xh100_full
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 
 # =============================================================================
-# Circuit Breakers Debug - Killarney 1×H100 (Llama-3.1-8B-Instruct)
+# Circuit Breakers Training - Killarney 2×H100 (Llama-3.1-8B-Instruct)
 # =============================================================================
 #
-# Single-GPU debug/test version. For full training, use:
-#   slurm/killarney_cb_llama31_8b_4xh100.sbatch
+# Full training (150 steps) on 2×H100 GPUs (160GB total VRAM)
+# Distributed training with model sharding
 #
 # Submit from your project directory:
 #   cd /project/6105522/memoozd/harmful-agents-meta-dataset
 #   mkdir -p logs
-#   sbatch slurm/killarney_cb_llama31_8b_1xh100_debug.sbatch
+#   sbatch slurm/killarney_cb_llama31_8b_4xh100.sbatch
 #
 # =============================================================================
 
@@ -111,11 +111,11 @@ PY
 # =============================================================================
 # CPU Threading Configuration
 # =============================================================================
-export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-8}
-export OPENBLAS_NUM_THREADS=${SLURM_CPUS_PER_TASK:-8}
-export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK:-8}
-export NUMEXPR_NUM_THREADS=${SLURM_CPUS_PER_TASK:-8}
-export VECLIB_MAXIMUM_THREADS=${SLURM_CPUS_PER_TASK:-8}
+export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-12}
+export OPENBLAS_NUM_THREADS=${SLURM_CPUS_PER_TASK:-12}
+export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK:-12}
+export NUMEXPR_NUM_THREADS=${SLURM_CPUS_PER_TASK:-12}
+export VECLIB_MAXIMUM_THREADS=${SLURM_CPUS_PER_TASK:-12}
 
 # =============================================================================
 # Storage and Cache Setup
@@ -133,10 +133,18 @@ export TORCH_HOME="$CACHE_ROOT/torch"
 export XDG_CACHE_HOME="$CACHE_ROOT/xdg"
 
 # =============================================================================
-# W&B Configuration (disabled for debug by default)
+# W&B Configuration
 # =============================================================================
-export WANDB_MODE="${WANDB_MODE:-online}"
+export WANDB_MODE=online
 export WANDB_PROJECT=circuit-breakers
+export WANDB_RUN_GROUP=killarney-cb-1xh100-full
+export WANDB_TAGS=killarney,cb,1xh100,llama31,full-training
+
+# =============================================================================
+# Distributed Training Setup
+# =============================================================================
+export MASTER_ADDR="$(hostname)"
+export MASTER_PORT=29500
 
 # =============================================================================
 # PyTorch Memory Optimization
@@ -147,27 +155,27 @@ export PYTORCH_ALLOC_CONF="expandable_segments:True"
 # Job Info
 # =============================================================================
 echo "========================================"
-echo "CB Training - DEBUG (Killarney 1×H100)"
+echo "Circuit Breaker Training - Killarney"
 echo "========================================"
 echo "Job ID: $SLURM_JOB_ID"
 echo "Date: $(date)"
 echo "Account: aip-rgrosse"
-echo "GPUs: 1 x H100 SXM 80GB"
+echo "GPUs: 1 x H100 SXM 80GB (4x nodes down)"
 echo "Model: meta-llama/Llama-3.1-8B-Instruct"
-echo "Steps: 10 (debug)"
-echo "Output: $RUN_DIR/outputs/cb_llama31_8b_debug"
+echo "Total Steps: 150 (full training)"
+echo "Output: $RUN_DIR/outputs/cb_llama31_8b_instruct"
 echo "========================================"
 
+# Single GPU - no accelerate needed, use higher gradient accumulation
 python scripts/train_circuit_breaker.py \
   --preset llama-3.1-8b-instruct \
   --loss-weighting dual \
-  --total-steps 10 \
+  --total-steps 150 \
   --batch-size 4 \
-  --gradient-accumulation-steps 2 \
-  --no-wandb \
-  --output-dir "$RUN_DIR/outputs/cb_llama31_8b_debug"
+  --gradient-accumulation-steps 8 \
+  --output-dir "$RUN_DIR/outputs/cb_llama31_8b_instruct"
 
 echo "========================================"
-echo "Debug training completed!"
+echo "Training completed!"
 echo "Date: $(date)"
 echo "========================================"
