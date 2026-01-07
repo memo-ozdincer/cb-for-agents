@@ -601,7 +601,26 @@ class CircuitBreakerDataset(Dataset):
         if isinstance(sample, dict) and sample.get('text'):
             return str(sample['text']), True
 
-        # Priority 2: Separate prompt and completion fields
+        # Priority 2: MULTI-TURN AGENTIC TRACES with messages[]
+        # This handles AgentDojo traces and augmented data with full conversation history
+        if isinstance(sample, dict) and sample.get('messages') and sample.get('is_agentic'):
+            messages = sample['messages']
+            if self.use_chat_template and hasattr(self.tokenizer, 'apply_chat_template'):
+                try:
+                    # Format messages for the tokenizer's chat template
+                    # Handle tool calls and tool responses
+                    formatted_messages = self._format_agentic_messages(messages)
+                    text = self.tokenizer.apply_chat_template(
+                        formatted_messages, tokenize=False, add_generation_prompt=False
+                    )
+                    return text, True
+                except Exception:
+                    pass
+            # Fallback: manual multi-turn formatting
+            text = self._format_messages_fallback(messages)
+            return text, True
+
+        # Priority 3: Separate prompt and completion fields
         if isinstance(sample, dict):
             prompt = sample.get('user_prompt', '')
             completion = sample.get('harmful_completion' if is_harmful else 'benign_completion', '')
@@ -625,9 +644,101 @@ class CircuitBreakerDataset(Dataset):
                 text = f"User: {prompt}\n\nAssistant: {completion}"
                 return text, True
 
-        # Priority 3: Prompt-only (legacy format)
+        # Priority 4: Prompt-only (legacy format)
         prompt = self._extract_prompt_legacy(sample)
         return prompt, False
+
+    def _format_agentic_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Format agentic messages with tool calls for chat template.
+
+        Handles:
+        - System messages
+        - User messages
+        - Assistant messages with tool_calls
+        - Tool response messages
+
+        Returns messages in a format compatible with Llama/Mistral chat templates.
+        """
+        import json
+        formatted = []
+
+        for msg in messages:
+            role = msg.get('role', 'user')
+            content = msg.get('content', '')
+
+            if role == 'system':
+                formatted.append({"role": "system", "content": str(content)})
+
+            elif role == 'user':
+                formatted.append({"role": "user", "content": str(content)})
+
+            elif role == 'assistant':
+                # Handle tool calls
+                tool_calls = msg.get('tool_calls', [])
+                if tool_calls:
+                    # Format tool calls as part of assistant content
+                    tc_text = ""
+                    for tc in tool_calls:
+                        func = tc.get('function', {})
+                        name = func.get('name', 'unknown')
+                        args = func.get('arguments', '{}')
+                        if isinstance(args, dict):
+                            args = json.dumps(args)
+                        tc_text += f"\n[TOOL_CALL: {name}({args})]"
+
+                    full_content = str(content) + tc_text if content else tc_text.strip()
+                    formatted.append({"role": "assistant", "content": full_content})
+                else:
+                    formatted.append({"role": "assistant", "content": str(content)})
+
+            elif role == 'tool':
+                # Format tool responses as user messages (since most templates don't have tool role)
+                tool_call_id = msg.get('tool_call_id', '')
+                tool_content = str(content)
+                formatted.append({
+                    "role": "user",
+                    "content": f"[TOOL_RESPONSE ({tool_call_id})]: {tool_content}"
+                })
+
+        return formatted
+
+    def _format_messages_fallback(self, messages: List[Dict[str, Any]]) -> str:
+        """
+        Fallback formatting for multi-turn messages when chat template fails.
+
+        Returns a plain text representation of the conversation.
+        """
+        import json
+        lines = []
+
+        for msg in messages:
+            role = msg.get('role', 'user')
+            content = msg.get('content', '')
+
+            if role == 'system':
+                lines.append(f"System: {content}")
+            elif role == 'user':
+                lines.append(f"User: {content}")
+            elif role == 'assistant':
+                tool_calls = msg.get('tool_calls', [])
+                if tool_calls:
+                    tc_parts = []
+                    for tc in tool_calls:
+                        func = tc.get('function', {})
+                        name = func.get('name', 'unknown')
+                        args = func.get('arguments', '{}')
+                        if isinstance(args, dict):
+                            args = json.dumps(args)
+                        tc_parts.append(f"{name}({args})")
+                    lines.append(f"Assistant: {content}\n[TOOL_CALLS: {', '.join(tc_parts)}]")
+                else:
+                    lines.append(f"Assistant: {content}")
+            elif role == 'tool':
+                tool_call_id = msg.get('tool_call_id', '')
+                lines.append(f"[Tool Response ({tool_call_id})]: {content}")
+
+        return "\n\n".join(lines)
 
     def _extract_prompt_legacy(self, sample: Dict[str, Any]) -> str:
         """Extract prompt from legacy format samples."""

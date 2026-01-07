@@ -1,9 +1,11 @@
 # Circuit Breakers Pipeline: Complete Reference
 
-**Version:** 1.0  
-**Last Updated:** December 25, 2025  
-**Target Model:** `meta-llama/Llama-4-Scout-17B-16E-Instruct`  
-**Hardware:** 4 × NVIDIA H100 SXM 80GB
+**Version:** 2.0
+**Last Updated:** January 7, 2026
+**Target Model:** `meta-llama/Llama-3.1-8B-Instruct` (tested), `meta-llama/Llama-4-Scout-17B-16E-Instruct` (supported)
+**Hardware:** 4 × NVIDIA L40S 48GB (tested), 4 × NVIDIA H100 SXM 80GB (supported)
+
+> **Major Update (v2.0):** Added full agentic data support with multi-turn traces, tool calls, and data augmentation pipeline. The training pipeline now handles `messages[]` arrays with tool_calls natively.
 
 ---
 
@@ -144,20 +146,35 @@ harmful-agents-meta-dataset/
 ├── scripts/
 │   ├── ingest_cb_data.py              # Data ingestion pipeline
 │   ├── format_for_cb/
-│   │   └── split_out_cb_completions.py # Optional: completion-style split + rejected rows
+│   │   ├── split_out_cb_completions.py # Completion-style split + rejected rows
+│   │   └── create_cb_batches.py       # Batch creation for training
+│   ├── augmentation/                  # NEW: Data augmentation pipeline
+│   │   ├── generate_b4_traces.py      # Convert B4 tool attacks → traces
+│   │   ├── generate_agentharm_completions.py  # Generate AgentHarm traces
+│   │   ├── generate_attack_scenarios.py       # YAML template generation
+│   │   ├── run_augmentation_pipeline.py       # Orchestrator script
+│   │   └── attack_templates/          # YAML attack templates
+│   │       ├── llm01_prompt_injection.yaml
+│   │       ├── llm06_excessive_agency.yaml
+│   │       └── agent_specific_attacks.yaml
 │   ├── train_circuit_breaker.py       # Training CLI entry point
 │   ├── hpc_setup.sh                   # HPC environment setup
 │   └── circuit_breakers/
 │       ├── __init__.py                # Module exports
 │       ├── config.py                  # Configuration dataclasses
-│       ├── trainer.py                 # Core training logic
+│       ├── trainer.py                 # Core training logic (multi-turn support)
 │       └── eval.py                    # Evaluation utilities
+├── slurm/
+│   └── Killarney/
+│       ├── killarney_cb_llama31_8b_4xl40s.sbatch  # Training job
+│       └── killarney_augmentation.sbatch          # Augmentation job
 ├── data/
 │   ├── circuit_breakers/              # OUTPUT: Processed CB data
-│   │   ├── _backups/                   # Timestamped backups before overwrites
+│   │   ├── _backups/                  # Timestamped backups
 │   │   ├── harmful/
 │   │   │   ├── harmful_pairs.jsonl
 │   │   │   ├── harmful_pairs.completions.jsonl
+│   │   │   ├── harmful_pairs.completions.augmented.jsonl  # With augmented data
 │   │   │   ├── harmful_pairs.prompt_only.jsonl
 │   │   │   └── harmful_pairs.rejected.jsonl
 │   │   ├── benign/
@@ -166,6 +183,10 @@ harmful-agents-meta-dataset/
 │   │   │   ├── benign_pairs.prompt_only.jsonl
 │   │   │   └── benign_pairs.rejected.jsonl
 │   │   └── cb_training_batches.jsonl  # Pre-batched 1:1 data
+│   ├── augmented/                     # NEW: Augmented data output
+│   │   ├── b4_traces.jsonl
+│   │   ├── agentharm_completions.jsonl
+│   │   └── attack_scenarios.jsonl
 │   ├── fujitsu/                       # INPUT: Fujitsu attacks
 │   ├── agent_dojo/                    # INPUT: AgentDojo traces
 │   ├── agent_harm/                    # INPUT: AgentHarm prompts
@@ -187,9 +208,13 @@ harmful-agents-meta-dataset/
 | [scripts/ingest_cb_data.py](scripts/ingest_cb_data.py) | Data ingestion | `load_harmful_data()`, `load_benign_data()`, `create_batches()` |
 | [scripts/train_circuit_breaker.py](scripts/train_circuit_breaker.py) | Training CLI | `main()`, `parse_args()` |
 | [scripts/circuit_breakers/config.py](scripts/circuit_breakers/config.py) | Configuration | `CircuitBreakerConfig`, `get_config()`, `CONFIG_PRESETS` |
-| [scripts/circuit_breakers/trainer.py](scripts/circuit_breakers/trainer.py) | Training loop | `CircuitBreakerTrainer`, `reroute_loss()`, `retain_loss()`, `get_alpha()` |
+| [scripts/circuit_breakers/trainer.py](scripts/circuit_breakers/trainer.py) | Training loop | `CircuitBreakerTrainer`, `reroute_loss()`, `retain_loss()`, `get_alpha()`, `_format_agentic_messages()` |
 | [scripts/circuit_breakers/eval.py](scripts/circuit_breakers/eval.py) | Evaluation | `is_refusal()`, `evaluate_refusal_rate()`, `evaluate_capability()` |
 | [scripts/hpc_setup.sh](scripts/hpc_setup.sh) | Environment setup | Shell script for uv/pip setup |
+| [scripts/augmentation/generate_b4_traces.py](scripts/augmentation/generate_b4_traces.py) | B4 trace generation | `generate_trace_from_tool_attack()` |
+| [scripts/augmentation/generate_agentharm_completions.py](scripts/augmentation/generate_agentharm_completions.py) | AgentHarm completion gen | `generate_template_trace()`, `infer_target_tools()` |
+| [scripts/augmentation/generate_attack_scenarios.py](scripts/augmentation/generate_attack_scenarios.py) | Template-based gen | `generate_trace_from_template()`, `load_templates()` |
+| [scripts/augmentation/run_augmentation_pipeline.py](scripts/augmentation/run_augmentation_pipeline.py) | Pipeline orchestrator | `run_step()`, `main()` |
 
 ---
 
@@ -254,34 +279,40 @@ wc -l data/circuit_breakers/cb_training_batches.jsonl
 head -1 data/circuit_breakers/cb_training_batches.jsonl | python -m json.tool
 ```
 
-### Current Data Statistics
+### Current Data Statistics (January 2026)
 
-After running ingestion:
+After running ingestion and completion extraction:
 
-| Category | Source | Count |
-|----------|--------|------:|
-| **Harmful Total** | Fujitsu + AgentDojo + AgentHarm | **37,763** |
-| **Benign Total** | WebArena + TAU2 + WebLINX + AgentDojo + AttackQA | **31,150** |
-| **Batches** | 1:1 balanced | **3,893** |
+| Category | Source | Count | Agentic |
+|----------|--------|------:|:-------:|
+| **Harmful (completions)** | Fujitsu B4 + B1/B3 + AgentDojo | **36,003** | 40.6% |
+| **Benign (completions)** | TAU2 + AgentDojo | **2,434** | 100% |
+| **Batches** | 1:1 balanced (batch_size=16) | **304** | — |
 
-Optional completion-style split outputs:
+**Agentic Breakdown (Harmful):**
 
-| Split Output | Count |
-|-------------|------:|
-| `harmful_pairs.completions.jsonl` | 22,757 |
-| `harmful_pairs.prompt_only.jsonl` | 15,006 |
-| `benign_pairs.completions.jsonl` | 27,769 |
-| `benign_pairs.prompt_only.jsonl` | 3,381 |
+| Metric | Count | % |
+|--------|------:|--:|
+| `is_agentic=True` | 14,605 | 40.6% |
+| `has_tool_calls` | 14,511 | 40.3% |
+| `tool_attack` (B4) | 13,246 | 36.8% |
+| Full `messages[]` | 1,359 | 3.8% |
 
 ### Limiting Reagent Analysis
 
-**Benign data is the limiting reagent.**
+**⚠️ Benign data is the critical limiting reagent.**
 
-- We have 37,763 harmful samples but 31,150 benign samples
-- With 8 samples per side per batch: 31,150 / 8 = 3,893 batches
-- The remaining harmful samples are unused unless you add more benign (or change batch sizing)
+- We have **36,003** harmful samples but only **2,434** benign samples
+- With 8 samples per side per batch: 2,434 / 8 = **304 batches**
+- Most harmful samples are unused due to benign shortage
 
-**To improve:** Add more benign capability data (see [Section 11](#11-design-decisions--rationale)).
+**To improve batch count:**
+1. Add full WebLINX dataset (~24K turns)
+2. Add AttackQA (25,335 QA pairs - requires pandas)
+3. Generate more agentic benign traces
+4. Run the augmentation pipeline for more diverse data
+
+See [DATA.md Section 7](DATA.md#7-current-data-statistics) for detailed statistics.
 
 ---
 
@@ -792,6 +823,62 @@ $$\text{decay\_steps} = \text{alpha\_decay\_multiplier} \times \text{total\_step
 
 If you want α to reach 0 by the end of training (at `total_steps`), set `alpha_decay_multiplier=1.0`.
 
+#### Multi-Turn Agentic Data Handling (v2.0)
+
+**File:** [scripts/circuit_breakers/trainer.py](scripts/circuit_breakers/trainer.py)
+
+The trainer now handles multi-turn agentic data with tool calls:
+
+```python
+def _format_agentic_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Format agentic messages with tool calls for chat template."""
+    formatted = []
+    for msg in messages:
+        role = msg.get('role', 'user')
+        content = msg.get('content', '')
+
+        if role == 'assistant':
+            tool_calls = msg.get('tool_calls') or []
+            if tool_calls:
+                # Append tool call representations
+                tc_text = ""
+                for tc in tool_calls:
+                    func = tc.get('function', {})
+                    name = func.get('name', 'unknown')
+                    args = func.get('arguments', '{}')
+                    tc_text += f"\n[TOOL_CALL: {name}({args})]"
+                formatted.append({
+                    "role": "assistant",
+                    "content": str(content) + tc_text
+                })
+            else:
+                formatted.append({"role": "assistant", "content": str(content)})
+
+        elif role == 'tool':
+            # Convert tool responses to user-role for compatibility
+            formatted.append({
+                "role": "user",
+                "content": f"[TOOL_RESPONSE]: {content}"
+            })
+
+        else:
+            formatted.append({"role": role, "content": str(content)})
+
+    return formatted
+```
+
+**Fallback handling:**
+```python
+def _format_messages_fallback(self, messages: List[Dict[str, Any]]) -> str:
+    """Fallback formatting when chat template fails."""
+    parts = []
+    for msg in messages:
+        role = msg.get('role', 'user')
+        content = msg.get('content', '')
+        parts.append(f"<|{role}|>\n{content}")
+    return "\n".join(parts)
+```
+
 #### CircuitBreakerTrainer.train_step()
 
 **File:** [scripts/circuit_breakers/trainer.py](scripts/circuit_breakers/trainer.py), lines 520-620
@@ -1281,6 +1368,9 @@ Usually indicates:
 | Modify loss function | `scripts/circuit_breakers/trainer.py` | `reroute_loss()`, `retain_loss()` |
 | Change alpha schedule | `scripts/circuit_breakers/trainer.py` | `get_alpha()` |
 | Add refusal patterns | `scripts/circuit_breakers/eval.py` | `REFUSAL_PATTERNS` |
+| Add multi-turn formatting | `scripts/circuit_breakers/trainer.py` | `_format_agentic_messages()` |
+| Add attack templates | `scripts/augmentation/attack_templates/` | New YAML files |
+| Customize B4 trace generation | `scripts/augmentation/generate_b4_traces.py` | `generate_trace_from_tool_attack()` |
 
 ### Command Cheat Sheet
 
@@ -1290,19 +1380,49 @@ Usually indicates:
 source cb_env/bin/activate
 huggingface-cli login
 
-# Data
+# Data ingestion
 python scripts/ingest_cb_data.py
+
+# Data augmentation (local)
+python scripts/augmentation/run_augmentation_pipeline.py
+
+# Data augmentation (SLURM)
+sbatch slurm/Killarney/killarney_augmentation.sbatch
 
 # Train (single GPU test)
 python scripts/train_circuit_breaker.py --total-steps 5 --no-wandb
 
-# Train (8 GPU)
-accelerate launch --num_processes 8 scripts/train_circuit_breaker.py
+# Train (4x L40S - tested configuration)
+accelerate launch --num_processes 4 scripts/train_circuit_breaker.py \
+    --preset llama-3.1-8b-instruct \
+    --batch-size 1 \
+    --gradient-accumulation-steps 16 \
+    --max-seq-length 512 \
+    --total-steps 150
+
+# Train (8x H100)
+accelerate launch --num_processes 8 scripts/train_circuit_breaker.py \
+    --preset llama-4-scout
 
 # Evaluate
 python scripts/circuit_breakers/eval.py \
-    --base-model meta-llama/Llama-4-Scout-17B-16E-Instruct \
-    --adapter-path outputs/cb_llama4_scout/final \
-    --harmful-data data/circuit_breakers/harmful/harmful_pairs.jsonl \
-    --benign-data data/circuit_breakers/benign/benign_pairs.jsonl
+    --base-model meta-llama/Llama-3.1-8B-Instruct \
+    --adapter-path outputs/cb_llama31_8b/final \
+    --harmful-data data/circuit_breakers/harmful/harmful_pairs.completions.jsonl \
+    --benign-data data/circuit_breakers/benign/benign_pairs.completions.jsonl
+```
+
+### Tested Training Configuration (4x L40S 48GB)
+
+```bash
+# This configuration was tested and completed successfully
+accelerate launch --num_processes 4 scripts/train_circuit_breaker.py \
+    --preset llama-3.1-8b-instruct \
+    --batch-size 1 \
+    --gradient-accumulation-steps 16 \
+    --max-seq-length 512 \
+    --total-steps 150 \
+    --output-dir outputs/cb_llama31_8b
+
+# Results: 150 steps in ~20 min, loss 9.75→5.92
 ```

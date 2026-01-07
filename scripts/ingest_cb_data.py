@@ -69,6 +69,41 @@ OUTPUT FORMAT (Pairs):
     "prompt": "The text prompt",
     "metadata": { ... }
 }
+
+AGENTIC DATA FORMAT:
+For agentic traces (AgentDojo, etc.), we preserve the full multi-turn conversation:
+{
+    "id": "unique_id",
+    "source": "agentdojo",
+    "category": "security_violation",
+    "is_agentic": true,
+    "messages": [
+        {"role": "system", "content": "..."},
+        {"role": "user", "content": "..."},
+        {"role": "assistant", "content": "...", "tool_calls": [...]},
+        {"role": "tool", "content": "...", "tool_call_id": "..."},
+        ...
+    ],
+    "attack_prompt": "flattened user message for fallback",
+    "metadata": {...}
+}
+
+For tool manipulation attacks (Fujitsu B4), we store the attack definition:
+{
+    "id": "unique_id",
+    "source": "fujitsu",
+    "category": "LLM01",
+    "is_agentic": true,
+    "tool_attack": {
+        "benign_query": "...",
+        "malicious_injection": "...",
+        "combined_query": "...",
+        "expected_tool": "retrieve_docs",
+        "simulated_tool": "search_web"  # Tool flip target
+    },
+    "attack_prompt": "malicious injection text",
+    "metadata": {...}
+}
 """
 
 import os
@@ -204,8 +239,8 @@ def load_harmful_data() -> List[Dict[str, Any]]:
     harmful_pairs = []
     counts = {'fujitsu_b4_orchestrator': 0, 'fujitsu_b1_rag_poisoning': 0, 'fujitsu_b3_direct_query': 0, 'fujitsu_b2_image_poisoning': 0, 'agentdojo': 0, 'agentharm': 0}
     
-    # 1. Fujitsu (B4) Orchestrator Attacks
-    print("\n--- Loading Harmful: Fujitsu (B4 Orchestrator) ---")
+    # 1. Fujitsu (B4) Orchestrator Attacks - AGENTIC TOOL MANIPULATION
+    print("\n--- Loading Harmful: Fujitsu (B4 Orchestrator) [AGENTIC] ---")
     fujitsu_data = read_jsonl(PATH_FUJITSU)  # No limit
     for a in fujitsu_data:
         prompt = norm_text(a.get('malicious_injection'))
@@ -217,13 +252,18 @@ def load_harmful_data() -> List[Dict[str, Any]]:
             'source': 'fujitsu',
             'category': a.get('category', 'unknown'),
             'subtype': a.get('subtype', 'unknown'),
+            'is_agentic': True,  # AGENTIC: Tool manipulation attack
+            'tool_attack': {
+                'benign_query': a.get('benign_query'),
+                'malicious_injection': a.get('malicious_injection'),
+                'combined_query': a.get('combined_query'),
+                'expected_tool': a.get('expected_tool'),
+                'simulated_tool': a.get('simulated_tool'),
+            },
             'attack_prompt': prompt,
             'benign_query': norm_text(a.get('benign_query')),
             'metadata': {
                 'benchmark': 'B4_orchestrator',
-                'combined_query': a.get('combined_query'),
-                'expected_tool': a.get('expected_tool'),
-                'simulated_tool': a.get('simulated_tool'),
                 'success': a.get('success'),
                 'judge_note': a.get('judge_note'),
                 'record_id': a.get('record_id'),
@@ -310,8 +350,8 @@ def load_harmful_data() -> List[Dict[str, Any]]:
         counts['fujitsu_b2_image_poisoning'] += 1
     print(f"  Loaded: {counts['fujitsu_b2_image_poisoning']}")
     
-    # 2. AgentDojo Harmful (Security Violations)
-    print("\n--- Loading Harmful: AgentDojo (all traces in data/agent_dojo) ---")
+    # 2. AgentDojo Harmful (Security Violations) - AGENTIC MULTI-TURN TRACES
+    print("\n--- Loading Harmful: AgentDojo (all traces in data/agent_dojo) [AGENTIC] ---")
     agentdojo_files = list_agentdojo_jsonl_files()
     if not agentdojo_files:
         print("  ⚠️  No AgentDojo JSONL files found.")
@@ -322,21 +362,34 @@ def load_harmful_data() -> List[Dict[str, Any]]:
             md = r.get('metadata', {})
             if md.get('security') is False:  # Explicit security failure = Harmful
                 msgs = r.get('messages', [])
+                if not msgs:
+                    continue
+
+                # Extract user message as fallback prompt
                 user_msg = next((m.get('content') for m in msgs if m.get('role') == 'user'), '')
                 prompt = norm_text(user_msg)
-                if not prompt:
-                    continue
+
+                # Check if this trace has tool calls (truly agentic)
+                has_tool_calls = any(
+                    m.get('tool_calls') or m.get('role') == 'tool'
+                    for m in msgs
+                )
 
                 harmful_pairs.append({
                     'id': f"agentdojo_harm_{stem}_{md.get('user_task_id', i)}",
                     'source': 'agentdojo',
                     'category': md.get('suite_name', 'agentdojo'),
                     'subtype': 'security_violation',
-                    'attack_prompt': prompt,
+                    'is_agentic': True,  # AGENTIC: Full multi-turn trace with tools
+                    'has_tool_calls': has_tool_calls,
+                    'messages': msgs,  # PRESERVE FULL MULTI-TURN TRACE
+                    'attack_prompt': prompt,  # Fallback for text-only processing
                     'benign_query': '',
                     'metadata': {
                         **md,
                         'origin_file': p.name,
+                        'num_messages': len(msgs),
+                        'num_tool_calls': sum(len(m.get('tool_calls') or []) for m in msgs),
                     }
                 })
                 counts['agentdojo'] += 1
@@ -455,8 +508,8 @@ def load_benign_data() -> List[Dict[str, Any]]:
         counts['weblinx'] += 1
     print(f"  Loaded: {counts['weblinx']}")
 
-    # 4. AgentDojo Benign
-    print("\n--- Loading Benign: AgentDojo (all traces in data/agent_dojo) ---")
+    # 4. AgentDojo Benign - AGENTIC MULTI-TURN TRACES
+    print("\n--- Loading Benign: AgentDojo (all traces in data/agent_dojo) [AGENTIC] ---")
     agentdojo_files = list_agentdojo_jsonl_files()
     if not agentdojo_files:
         print("  ⚠️  No AgentDojo JSONL files found.")
@@ -467,18 +520,32 @@ def load_benign_data() -> List[Dict[str, Any]]:
             md = r.get('metadata', {})
             if md.get('security') is True or md.get('success') is True:
                 msgs = r.get('messages', [])
+                if not msgs:
+                    continue
+
+                # Extract user message as fallback prompt
                 user_msg = next((m.get('content') for m in msgs if m.get('role') == 'user'), '')
                 prompt = norm_text(user_msg)
-                if not prompt:
-                    continue
+
+                # Check if this trace has tool calls (truly agentic)
+                has_tool_calls = any(
+                    m.get('tool_calls') or m.get('role') == 'tool'
+                    for m in msgs
+                )
+
                 benign_pairs.append({
                     'id': f"agentdojo_benign_{stem}_{i:06d}",
                     'source': 'agentdojo',
                     'category': 'capability',
-                    'prompt': prompt,
+                    'is_agentic': True,  # AGENTIC: Full multi-turn trace with tools
+                    'has_tool_calls': has_tool_calls,
+                    'messages': msgs,  # PRESERVE FULL MULTI-TURN TRACE
+                    'prompt': prompt,  # Fallback for text-only processing
                     'metadata': {
                         **md,
                         'origin_file': p.name,
+                        'num_messages': len(msgs),
+                        'num_tool_calls': sum(len(m.get('tool_calls') or []) for m in msgs),
                     }
                 })
                 counts['agentdojo'] += 1
@@ -563,6 +630,29 @@ def main():
     print("="*60)
     print(f"  Total Harmful Pairs: {len(harmful_pairs)}")
     print(f"  Total Benign Pairs:  {len(benign_pairs)}")
+
+    # AGENTIC DATA STATISTICS
+    harmful_agentic = sum(1 for p in harmful_pairs if p.get('is_agentic'))
+    harmful_with_msgs = sum(1 for p in harmful_pairs if p.get('messages'))
+    harmful_with_tools = sum(1 for p in harmful_pairs if p.get('has_tool_calls'))
+    harmful_with_tool_attack = sum(1 for p in harmful_pairs if p.get('tool_attack'))
+
+    benign_agentic = sum(1 for p in benign_pairs if p.get('is_agentic'))
+    benign_with_msgs = sum(1 for p in benign_pairs if p.get('messages'))
+    benign_with_tools = sum(1 for p in benign_pairs if p.get('has_tool_calls'))
+
+    print(f"\n  AGENTIC DATA BREAKDOWN:")
+    print(f"  ─────────────────────────────────────────────────────────")
+    print(f"  HARMFUL:")
+    print(f"    is_agentic=True:     {harmful_agentic:>6} ({100*harmful_agentic/len(harmful_pairs) if harmful_pairs else 0:.1f}%)")
+    print(f"    with messages[]:     {harmful_with_msgs:>6} (multi-turn traces)")
+    print(f"    has_tool_calls:      {harmful_with_tools:>6} (tool calls in trace)")
+    print(f"    tool_attack:         {harmful_with_tool_attack:>6} (Fujitsu B4 tool manipulation)")
+    print(f"  BENIGN:")
+    print(f"    is_agentic=True:     {benign_agentic:>6} ({100*benign_agentic/len(benign_pairs) if benign_pairs else 0:.1f}%)")
+    print(f"    with messages[]:     {benign_with_msgs:>6} (multi-turn traces)")
+    print(f"    has_tool_calls:      {benign_with_tools:>6} (tool calls in trace)")
+    print(f"  ─────────────────────────────────────────────────────────")
 
     # Identify limiting reagent
     if harmful_pairs and benign_pairs:

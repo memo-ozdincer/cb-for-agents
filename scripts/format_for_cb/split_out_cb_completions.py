@@ -265,6 +265,9 @@ def _filter_reasons(
 class SplitResult:
     extracted: int
     remaining: int
+    agentic_count: int = 0  # Number of is_agentic=True samples
+    with_tool_calls: int = 0  # Number with has_tool_calls=True
+    with_messages: int = 0  # Number with full messages[] array
 
 
 @dataclass
@@ -346,6 +349,59 @@ def split_harmful(
                 else:
                     extracted_rows.append(candidate)
                 continue
+
+        # Fujitsu B4 (Orchestrator): AGENTIC tool manipulation attacks
+        # These don't have target_llm_output - they have tool_attack{} with tool flip info
+        if src == "fujitsu" and rid.startswith("fujitsu_b4_"):
+            tool_attack = r.get("tool_attack") or {}
+            if tool_attack:
+                benign_q = _norm_text(tool_attack.get("benign_query"))
+                malicious_inj = _norm_text(tool_attack.get("malicious_injection"))
+                combined_q = _norm_text(tool_attack.get("combined_query"))
+                expected_tool = tool_attack.get("expected_tool", "")
+                simulated_tool = tool_attack.get("simulated_tool", "")
+
+                if fujitsu_success_only:
+                    # B4 success = tool flip occurred
+                    if md.get("success") is not True:
+                        remaining_rows.append(r)
+                        continue
+
+                # For B4, create a structured "completion" that shows the harmful tool flip
+                # This is the agentic harm: the agent called the WRONG tool
+                user_prompt_n = combined_q if combined_q else benign_q
+                harmful_completion = f"[TOOL_CALL] {simulated_tool}\n(Expected: {expected_tool}, but injection caused flip to: {simulated_tool})"
+
+                if user_prompt_n:
+                    candidate = {
+                        "id": rid,
+                        "source": "fujitsu",
+                        "category": r.get("category"),
+                        "subtype": r.get("subtype"),
+                        "is_agentic": True,
+                        "has_tool_calls": True,
+                        "tool_attack": tool_attack,  # Preserve full tool attack structure
+                        "user_prompt": user_prompt_n,
+                        "harmful_completion": harmful_completion,
+                        "text": f"User: {user_prompt_n}\nAssistant: {harmful_completion}",
+                        "metadata": {"from": "fujitsu_b4_orchestrator", **md},
+                    }
+                    reasons = _filter_reasons(
+                        source=str(src or ""),
+                        benchmark=benchmark,
+                        user_prompt=user_prompt_n,
+                        completion=harmful_completion,
+                        combined_text=candidate.get("text", ""),
+                        metadata=md,
+                        cfg=cfg,
+                    )
+                    if reasons:
+                        rejected_rows.append({"side": "harmful", "reasons": reasons, "row": r})
+                        if not cfg.exclude_rejected:
+                            remaining_rows.append(r)
+                    else:
+                        extracted_rows.append(candidate)
+                    continue
 
         if src == "fujitsu" and rid.startswith("fujitsu_b3_"):
             f_id = rid.replace("fujitsu_b3_", "", 1)
@@ -456,50 +512,67 @@ def split_harmful(
                 continue
 
         # AgentDojo: derive completion from assistant messages
+        # NEW: Check if messages already exist in ingested data (agentic format)
         if src == "agentdojo" and rid.startswith("agentdojo_harm_"):
-            origin_file = md.get("origin_file")
-            if origin_file:
-                if origin_file not in agentdojo_indices:
-                    p = AGENTDOJO_DIR / origin_file
-                    if p.exists():
-                        agentdojo_indices[origin_file] = build_agentdojo_index(p)
-                    else:
-                        agentdojo_indices[origin_file] = {}
+            # First try to use messages already in the ingested row (new agentic format)
+            messages = r.get("messages") or []
 
-                key = _agentdojo_index_key(md)
-                rec = agentdojo_indices.get(origin_file, {}).get(key)
-                if rec:
-                    messages = rec.get("messages") or []
-                    if isinstance(messages, list):
-                        user_prompt_n = _norm_text(_first_user_message(messages))
-                        completion_n = _norm_text(_join_assistant_messages(messages))
-                        if user_prompt_n and completion_n:
-                            candidate = {
-                                "id": rid,
-                                "source": "agentdojo",
-                                "category": r.get("category"),
-                                "subtype": r.get("subtype"),
-                                "user_prompt": user_prompt_n,
-                                "harmful_completion": completion_n,
-                                "text": f"User: {user_prompt_n}\nAssistant: {completion_n}",
-                                "metadata": {"from": "agentdojo_trace", **md},
-                            }
-                            reasons = _filter_reasons(
-                                source=str(src or ""),
-                                benchmark=benchmark,
-                                user_prompt=user_prompt_n,
-                                completion=completion_n,
-                                combined_text=candidate.get("text", ""),
-                                metadata=md,
-                                cfg=cfg,
-                            )
-                            if reasons:
-                                rejected_rows.append({"side": "harmful", "reasons": reasons, "row": r})
-                                if not cfg.exclude_rejected:
-                                    remaining_rows.append(r)
-                            else:
-                                extracted_rows.append(candidate)
-                            continue
+            # Fallback: re-read from original AgentDojo files
+            if not messages:
+                origin_file = md.get("origin_file")
+                if origin_file:
+                    if origin_file not in agentdojo_indices:
+                        p = AGENTDOJO_DIR / origin_file
+                        if p.exists():
+                            agentdojo_indices[origin_file] = build_agentdojo_index(p)
+                        else:
+                            agentdojo_indices[origin_file] = {}
+
+                    key = _agentdojo_index_key(md)
+                    rec = agentdojo_indices.get(origin_file, {}).get(key)
+                    if rec:
+                        messages = rec.get("messages") or []
+
+            if isinstance(messages, list) and messages:
+                user_prompt_n = _norm_text(_first_user_message(messages))
+                completion_n = _norm_text(_join_assistant_messages(messages))
+                if user_prompt_n and completion_n:
+                    # Check if this is truly agentic (has tool calls)
+                    is_agentic = r.get("is_agentic", False)
+                    has_tool_calls = r.get("has_tool_calls", False) or any(
+                        m.get("tool_calls") or m.get("role") == "tool"
+                        for m in messages
+                    )
+
+                    candidate = {
+                        "id": rid,
+                        "source": "agentdojo",
+                        "category": r.get("category"),
+                        "subtype": r.get("subtype"),
+                        "is_agentic": is_agentic or has_tool_calls,
+                        "has_tool_calls": has_tool_calls,
+                        "messages": messages,  # PRESERVE FULL MULTI-TURN TRACE
+                        "user_prompt": user_prompt_n,
+                        "harmful_completion": completion_n,
+                        "text": f"User: {user_prompt_n}\nAssistant: {completion_n}",
+                        "metadata": {"from": "agentdojo_trace", **md},
+                    }
+                    reasons = _filter_reasons(
+                        source=str(src or ""),
+                        benchmark=benchmark,
+                        user_prompt=user_prompt_n,
+                        completion=completion_n,
+                        combined_text=candidate.get("text", ""),
+                        metadata=md,
+                        cfg=cfg,
+                    )
+                    if reasons:
+                        rejected_rows.append({"side": "harmful", "reasons": reasons, "row": r})
+                        if not cfg.exclude_rejected:
+                            remaining_rows.append(r)
+                    else:
+                        extracted_rows.append(candidate)
+                    continue
 
         remaining_rows.append(r)
 
@@ -515,7 +588,18 @@ def split_harmful(
         if out_rejected is not None:
             write_jsonl(out_rejected, rejected_rows)
 
-    return SplitResult(extracted=len(extracted_rows), remaining=len(remaining_rows))
+    # Compute agentic statistics
+    agentic_count = sum(1 for r in extracted_rows if r.get("is_agentic"))
+    with_tool_calls = sum(1 for r in extracted_rows if r.get("has_tool_calls"))
+    with_messages = sum(1 for r in extracted_rows if r.get("messages"))
+
+    return SplitResult(
+        extracted=len(extracted_rows),
+        remaining=len(remaining_rows),
+        agentic_count=agentic_count,
+        with_tool_calls=with_tool_calls,
+        with_messages=with_messages,
+    )
 
 
 def split_benign(
@@ -598,49 +682,66 @@ def split_benign(
                 continue
 
         # AgentDojo benign: derive completion from assistant messages
+        # NEW: Check if messages already exist in ingested data (agentic format)
         if src == "agentdojo" and rid.startswith("agentdojo_benign_"):
-            origin_file = md.get("origin_file")
-            if origin_file:
-                if origin_file not in agentdojo_indices:
-                    p = AGENTDOJO_DIR / origin_file
-                    if p.exists():
-                        agentdojo_indices[origin_file] = build_agentdojo_index(p)
-                    else:
-                        agentdojo_indices[origin_file] = {}
+            # First try to use messages already in the ingested row (new agentic format)
+            messages = r.get("messages") or []
 
-                key = _agentdojo_index_key(md)
-                rec = agentdojo_indices.get(origin_file, {}).get(key)
-                if rec:
-                    messages = rec.get("messages") or []
-                    if isinstance(messages, list):
-                        user_prompt_n = _norm_text(_first_user_message(messages))
-                        completion_n = _norm_text(_join_assistant_messages(messages))
-                        if user_prompt_n and completion_n:
-                            candidate = {
-                                "id": rid,
-                                "source": "agentdojo",
-                                "category": r.get("category"),
-                                "user_prompt": user_prompt_n,
-                                "benign_completion": completion_n,
-                                "text": f"User: {user_prompt_n}\nAssistant: {completion_n}",
-                                "metadata": {"from": "agentdojo_trace", **md},
-                            }
-                            reasons = _filter_reasons(
-                                source=str(src or ""),
-                                benchmark=benchmark,
-                                user_prompt=user_prompt_n,
-                                completion=completion_n,
-                                combined_text=candidate.get("text", ""),
-                                metadata=md,
-                                cfg=cfg,
-                            )
-                            if reasons:
-                                rejected_rows.append({"side": "benign", "reasons": reasons, "row": r})
-                                if not cfg.exclude_rejected:
-                                    remaining_rows.append(r)
-                            else:
-                                extracted_rows.append(candidate)
-                            continue
+            # Fallback: re-read from original AgentDojo files
+            if not messages:
+                origin_file = md.get("origin_file")
+                if origin_file:
+                    if origin_file not in agentdojo_indices:
+                        p = AGENTDOJO_DIR / origin_file
+                        if p.exists():
+                            agentdojo_indices[origin_file] = build_agentdojo_index(p)
+                        else:
+                            agentdojo_indices[origin_file] = {}
+
+                    key = _agentdojo_index_key(md)
+                    rec = agentdojo_indices.get(origin_file, {}).get(key)
+                    if rec:
+                        messages = rec.get("messages") or []
+
+            if isinstance(messages, list) and messages:
+                user_prompt_n = _norm_text(_first_user_message(messages))
+                completion_n = _norm_text(_join_assistant_messages(messages))
+                if user_prompt_n and completion_n:
+                    # Check if this is truly agentic (has tool calls)
+                    is_agentic = r.get("is_agentic", False)
+                    has_tool_calls = r.get("has_tool_calls", False) or any(
+                        m.get("tool_calls") or m.get("role") == "tool"
+                        for m in messages
+                    )
+
+                    candidate = {
+                        "id": rid,
+                        "source": "agentdojo",
+                        "category": r.get("category"),
+                        "is_agentic": is_agentic or has_tool_calls,
+                        "has_tool_calls": has_tool_calls,
+                        "messages": messages,  # PRESERVE FULL MULTI-TURN TRACE
+                        "user_prompt": user_prompt_n,
+                        "benign_completion": completion_n,
+                        "text": f"User: {user_prompt_n}\nAssistant: {completion_n}",
+                        "metadata": {"from": "agentdojo_trace", **md},
+                    }
+                    reasons = _filter_reasons(
+                        source=str(src or ""),
+                        benchmark=benchmark,
+                        user_prompt=user_prompt_n,
+                        completion=completion_n,
+                        combined_text=candidate.get("text", ""),
+                        metadata=md,
+                        cfg=cfg,
+                    )
+                    if reasons:
+                        rejected_rows.append({"side": "benign", "reasons": reasons, "row": r})
+                        if not cfg.exclude_rejected:
+                            remaining_rows.append(r)
+                    else:
+                        extracted_rows.append(candidate)
+                    continue
 
         remaining_rows.append(r)
 
@@ -656,7 +757,18 @@ def split_benign(
         if out_rejected is not None:
             write_jsonl(out_rejected, rejected_rows)
 
-    return SplitResult(extracted=len(extracted_rows), remaining=len(remaining_rows))
+    # Compute agentic statistics
+    agentic_count = sum(1 for r in extracted_rows if r.get("is_agentic"))
+    with_tool_calls = sum(1 for r in extracted_rows if r.get("has_tool_calls"))
+    with_messages = sum(1 for r in extracted_rows if r.get("messages"))
+
+    return SplitResult(
+        extracted=len(extracted_rows),
+        remaining=len(remaining_rows),
+        agentic_count=agentic_count,
+        with_tool_calls=with_tool_calls,
+        with_messages=with_messages,
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -808,6 +920,17 @@ def main() -> None:
     print(f"Harmful remaining prompt-only:     {hr.remaining}")
     print(f"Benign extracted to completions:  {br.extracted}")
     print(f"Benign remaining prompt-only:     {br.remaining}")
+
+    # AGENTIC DATA BREAKDOWN
+    print(f"\n=== Agentic Data Breakdown ===")
+    print(f"HARMFUL with completions:")
+    print(f"  is_agentic=True:     {hr.agentic_count:>6} ({100*hr.agentic_count/hr.extracted if hr.extracted else 0:.1f}%)")
+    print(f"  has_tool_calls:      {hr.with_tool_calls:>6} ({100*hr.with_tool_calls/hr.extracted if hr.extracted else 0:.1f}%)")
+    print(f"  with messages[]:     {hr.with_messages:>6} (full multi-turn traces)")
+    print(f"BENIGN with completions:")
+    print(f"  is_agentic=True:     {br.agentic_count:>6} ({100*br.agentic_count/br.extracted if br.extracted else 0:.1f}%)")
+    print(f"  has_tool_calls:      {br.with_tool_calls:>6} ({100*br.with_tool_calls/br.extracted if br.extracted else 0:.1f}%)")
+    print(f"  with messages[]:     {br.with_messages:>6} (full multi-turn traces)")
 
     if args.dry_run:
         print("\n(dry-run) No files written.")
