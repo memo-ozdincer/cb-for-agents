@@ -16,10 +16,16 @@
 # Hardware: 4x NVIDIA L40S (48GB each = 192GB total VRAM)
 # Full training (150 steps) on 4 GPUs with distributed training
 #
+# MEMORY OPTIMIZATIONS for L40S (44GB usable per GPU):
+# - DeepSpeed ZeRO Stage 2: shards optimizer states across GPUs
+# - Reduced max_seq_length: 512 (vs 2048 default)
+# - Reduced batch_size: 1 per GPU (vs 2 default)
+# - Higher gradient accumulation: 16 (effective batch = 4*1*16 = 64)
+#
 # Submit from your project directory:
 #   cd /project/6105522/memoozd/harmful-agents-meta-dataset
 #   mkdir -p logs
-#   sbatch slurm/killarney_cb_llama31_8b_4xl40s.sbatch
+#   sbatch slurm/Killarney/killarney_cb_llama31_8b_4xl40s.sbatch
 #
 # =============================================================================
 
@@ -68,7 +74,7 @@ def check(mod: str) -> None:
         print(f"ERROR: failed to import '{mod}': {e}")
         sys.exit(1)
 
-for m in ("torch", "transformers", "peft", "accelerate"):
+for m in ("torch", "transformers", "peft", "accelerate", "deepspeed"):
     check(m)
 
 import torch, transformers
@@ -127,7 +133,7 @@ export NCCL_DEBUG=INFO
 # =============================================================================
 # PyTorch Memory Optimization
 # =============================================================================
-export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+export PYTORCH_ALLOC_CONF="expandable_segments:True"
 
 # =============================================================================
 # Job Info
@@ -140,27 +146,36 @@ echo "Date: $(date)"
 echo "Account: aip-rgrosse"
 echo "GPUs: 4 x L40S 48GB (192GB total VRAM)"
 echo "CPUs: 32 (8 per GPU)"
-echo "Memory: 128GB"
+echo "Memory: 96GB"
 echo "Model: meta-llama/Llama-3.1-8B-Instruct"
 echo "Total Steps: 150 (full training)"
+echo "Batch Size: 1 per GPU (4 total)"
+echo "Max Seq Length: 512"
+echo "Gradient Accum: 16 (effective batch: 64)"
+echo "DeepSpeed: ZeRO Stage 2"
 echo "Output: $RUN_DIR/outputs/cb_llama31_8b_instruct"
 echo "========================================"
 
 # =============================================================================
-# Multi-GPU Training with Accelerate
+# Multi-GPU Training with Accelerate + DeepSpeed ZeRO Stage 2
 # =============================================================================
-# With 4 GPUs, reduce batch size to 2 to avoid OOM
-# Effective batch size = 4 GPUs × 2 batch × 4 accumulation = 32
+# Memory-optimized configuration for L40S GPUs:
+# - DeepSpeed ZeRO Stage 2 shards optimizer states across GPUs
+# - batch_size=1, max_seq_length=512 to fit in 44GB VRAM
+# - Effective batch size = 4 GPUs × 1 batch × 16 accumulation = 64
 accelerate launch \
   --num_processes=4 \
   --num_machines=1 \
   --mixed_precision=bf16 \
+  --use_deepspeed \
+  --deepspeed_config_file="$REPO_DIR/configs/deepspeed_zero2_l40s.json" \
   scripts/train_circuit_breaker.py \
   --preset llama-3.1-8b-instruct \
   --loss-weighting dual \
   --total-steps 150 \
-  --batch-size 2 \
-  --gradient-accumulation-steps 4 \
+  --batch-size 1 \
+  --max-seq-length 512 \
+  --gradient-accumulation-steps 16 \
   --output-dir "$RUN_DIR/outputs/cb_llama31_8b_instruct"
 
 echo "========================================"

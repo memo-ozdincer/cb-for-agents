@@ -88,7 +88,7 @@ export WANDB_PROJECT="${WANDB_PROJECT:-circuit-breakers}"
 # =============================================================================
 # PyTorch Memory Optimization
 # =============================================================================
-export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+export PYTORCH_ALLOC_CONF="expandable_segments:True"
 
 # =============================================================================
 # Job Info

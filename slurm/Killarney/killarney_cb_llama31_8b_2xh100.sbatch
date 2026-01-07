@@ -15,14 +15,6 @@
 #
 # Full training (150 steps) on 2×H100 GPUs (160GB total VRAM)
 # Distributed training with model sharding
-#
-# Submit from your project directory:
-#   cd /project/6105522/memoozd/harmful-agents-meta-dataset
-#   mkdir -p logs
-#   sbatch slurm/killarney_cb_llama31_8b_4xh100.sbatch
-#
-# =============================================================================
-
 set -euo pipefail
 
 mkdir -p logs
@@ -125,7 +117,7 @@ export MASTER_PORT=29500
 # =============================================================================
 # PyTorch Memory Optimization
 # =============================================================================
-export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+export PYTORCH_ALLOC_CONF="expandable_segments:True"
 
 # =============================================================================
 # Job Info

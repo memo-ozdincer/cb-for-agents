@@ -89,7 +89,7 @@ export MASTER_PORT=29500
 # =============================================================================
 # PyTorch Memory Optimization
 # =============================================================================
-export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+export PYTORCH_ALLOC_CONF="expandable_segments:True"
 
 # =============================================================================
 # Job Info

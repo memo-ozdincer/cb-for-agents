@@ -44,7 +44,7 @@ python -c 'import torch, transformers, peft; print("torch:", torch.__version__, 
 
 echo "=== Environment setup ==="
 export OMP_NUM_THREADS=4
-export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+export PYTORCH_ALLOC_CONF="expandable_segments:True"
 
 SCRATCH_DIR="$HOME/scratch"
 RUN_DIR="$SCRATCH_DIR/cb_debug/$SLURM_JOB_ID"
