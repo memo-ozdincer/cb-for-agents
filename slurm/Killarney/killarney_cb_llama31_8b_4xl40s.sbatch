@@ -155,7 +155,6 @@ accelerate launch \
   --num_processes=4 \
   --num_machines=1 \
   --mixed_precision=bf16 \
-  --use_deepspeed=false \
   scripts/train_circuit_breaker.py \
   --preset llama-3.1-8b-instruct \
   --loss-weighting dual \
