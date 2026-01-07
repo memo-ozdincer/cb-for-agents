@@ -158,6 +158,62 @@ echo "Output: $RUN_DIR/outputs/cb_llama31_8b_instruct"
 echo "========================================"
 
 # =============================================================================
+# Pre-Training Data Validation
+# =============================================================================
+echo ""
+echo "Validating training data..."
+
+BATCHES_FILE="data/circuit_breakers/cb_training_batches.jsonl"
+if [[ ! -f "$BATCHES_FILE" ]]; then
+  echo "ERROR: Training data not found at $BATCHES_FILE"
+  echo "Run: sbatch slurm/Killarney/killarney_prepare_cb_data.sbatch"
+  exit 1
+fi
+
+# Check for completions (critical for CB training!)
+python - << 'PY'
+import json
+import sys
+
+batches_file = "data/circuit_breakers/cb_training_batches.jsonl"
+with open(batches_file) as f:
+    batches = [json.loads(l) for l in f]
+
+total_harmful = sum(len(b.get('harmful', [])) for b in batches)
+with_completion = sum(
+    1 for b in batches
+    for s in b.get('harmful', [])
+    if s.get('text') or s.get('harmful_completion')
+)
+pct = 100 * with_completion / total_harmful if total_harmful > 0 else 0
+
+print(f"  Batches: {len(batches)}")
+print(f"  Harmful samples: {total_harmful}")
+print(f"  With completions: {with_completion} ({pct:.1f}%)")
+
+if pct < 10:
+    print("")
+    print("CRITICAL: Less than 10% of harmful samples have completions!")
+    print("CB training will be INEFFECTIVE.")
+    print("Run data preparation first:")
+    print("  sbatch slurm/Killarney/killarney_prepare_cb_data.sbatch")
+    sys.exit(1)
+elif pct < 50:
+    print("")
+    print("WARNING: Less than 50% of harmful samples have completions.")
+    print("Consider running data preparation for better results.")
+else:
+    print("  OK: Majority have completions")
+PY
+
+if [[ $? -ne 0 ]]; then
+  echo "Data validation failed!"
+  exit 1
+fi
+
+echo ""
+
+# =============================================================================
 # Multi-GPU Training with Accelerate (DDP)
 # =============================================================================
 # Memory-optimized configuration for L40S GPUs:

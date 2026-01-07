@@ -72,9 +72,18 @@ def audit_data_ingestion(data_path: str, n_samples: int = 3) -> Dict[str, Any]:
     # Count completion-style samples
     total_harmful = 0
     total_benign = 0
+
+    # Harmful field counts
     harmful_with_text = 0
-    harmful_with_completion = 0
-    benign_with_prompt = 0
+    harmful_with_completion = 0  # has 'harmful_completion' field
+    harmful_with_user_prompt = 0
+    harmful_prompt_only = 0  # has attack_prompt but no completion
+
+    # Benign field counts
+    benign_with_text = 0
+    benign_with_completion = 0  # has 'benign_completion' field
+    benign_with_user_prompt = 0
+    benign_prompt_only = 0
 
     for batch in batches:
         harmful_samples = batch.get('harmful', [])
@@ -84,23 +93,58 @@ def audit_data_ingestion(data_path: str, n_samples: int = 3) -> Dict[str, Any]:
         total_benign += len(benign_samples)
 
         for sample in harmful_samples:
-            if 'text' in sample:
+            has_completion = False
+            if sample.get('text'):
                 harmful_with_text += 1
-            if 'attack_prompt' in sample:
+                has_completion = True
+            if sample.get('harmful_completion'):
                 harmful_with_completion += 1
+                has_completion = True
+            if sample.get('user_prompt'):
+                harmful_with_user_prompt += 1
+            if not has_completion:
+                harmful_prompt_only += 1
 
         for sample in benign_samples:
-            if 'prompt' in sample:
-                benign_with_prompt += 1
+            has_completion = False
+            if sample.get('text'):
+                benign_with_text += 1
+                has_completion = True
+            if sample.get('benign_completion'):
+                benign_with_completion += 1
+                has_completion = True
+            if sample.get('user_prompt'):
+                benign_with_user_prompt += 1
+            if not has_completion:
+                benign_prompt_only += 1
 
     print(f"\n{'─' * 80}")
     print(f"Dataset Statistics:")
     print(f"  Total batches: {len(batches)}")
     print(f"  Total harmful samples: {total_harmful}")
     print(f"  Total benign samples: {total_benign}")
-    print(f"  Harmful with 'text' field: {harmful_with_text}/{total_harmful} ({harmful_with_text/total_harmful*100:.1f}%)")
-    print(f"  Harmful with 'attack_prompt': {harmful_with_completion}/{total_harmful} ({harmful_with_completion/total_harmful*100:.1f}%)")
-    print(f"  Benign with 'prompt': {benign_with_prompt}/{total_benign} ({benign_with_prompt/total_benign*100:.1f}%)")
+
+    print(f"\n  HARMFUL SAMPLE ANALYSIS:")
+    print(f"    With 'text' field (pre-rendered): {harmful_with_text}/{total_harmful} ({harmful_with_text/max(1,total_harmful)*100:.1f}%)")
+    print(f"    With 'harmful_completion' field: {harmful_with_completion}/{total_harmful} ({harmful_with_completion/max(1,total_harmful)*100:.1f}%)")
+    print(f"    With 'user_prompt' field: {harmful_with_user_prompt}/{total_harmful} ({harmful_with_user_prompt/max(1,total_harmful)*100:.1f}%)")
+    print(f"    PROMPT-ONLY (no completion): {harmful_prompt_only}/{total_harmful} ({harmful_prompt_only/max(1,total_harmful)*100:.1f}%)")
+
+    if harmful_prompt_only == total_harmful:
+        print(f"\n    ❌ CRITICAL: ALL harmful samples are PROMPT-ONLY!")
+        print(f"       CB training will be INEFFECTIVE without harmful completions!")
+        print(f"       Run: python scripts/prepare_cb_training.py")
+    elif harmful_prompt_only > total_harmful * 0.5:
+        print(f"\n    ⚠️  WARNING: {harmful_prompt_only/total_harmful*100:.0f}% of harmful samples lack completions!")
+        print(f"       Consider running: python scripts/format_for_cb/split_out_cb_completions.py")
+    else:
+        print(f"\n    ✓ GOOD: {(total_harmful - harmful_prompt_only)/total_harmful*100:.0f}% of harmful samples have completions")
+
+    print(f"\n  BENIGN SAMPLE ANALYSIS:")
+    print(f"    With 'text' field (pre-rendered): {benign_with_text}/{total_benign} ({benign_with_text/max(1,total_benign)*100:.1f}%)")
+    print(f"    With 'benign_completion' field: {benign_with_completion}/{total_benign} ({benign_with_completion/max(1,total_benign)*100:.1f}%)")
+    print(f"    With 'user_prompt' field: {benign_with_user_prompt}/{total_benign} ({benign_with_user_prompt/max(1,total_benign)*100:.1f}%)")
+    print(f"    PROMPT-ONLY (no completion): {benign_prompt_only}/{total_benign} ({benign_prompt_only/max(1,total_benign)*100:.1f}%)")
 
     # Show sample harmful examples
     print_subheader(f"Sample Harmful Examples (first {n_samples})")
@@ -112,27 +156,43 @@ def audit_data_ingestion(data_path: str, n_samples: int = 3) -> Dict[str, Any]:
         print(f"  Category: {sample.get('category', 'N/A')}")
         print(f"  Fields: {list(sample.keys())}")
 
-        if 'text' in sample:
-            text = sample['text']
-            print(f"\n  [Pre-rendered Text Field]:")
-            print(f"    Length: {len(text)} chars")
-            print(f"    Preview (first 300 chars):")
-            print(f"    {text[:300]}")
-            if len(text) > 300:
-                print(f"    ... [truncated {len(text) - 300} chars]")
+        # Check completion status
+        has_text = bool(sample.get('text'))
+        has_completion = bool(sample.get('harmful_completion'))
+        has_user_prompt = bool(sample.get('user_prompt'))
 
-        if 'attack_prompt' in sample:
+        if has_text or has_completion:
+            print(f"\n  ✓ HAS COMPLETION DATA")
+        else:
+            print(f"\n  ❌ NO COMPLETION DATA (prompt-only)")
+
+        if 'text' in sample and sample['text']:
+            text = sample['text']
+            print(f"\n  [Pre-rendered Text Field] (length: {len(text)} chars):")
+            print(f"    {text[:400]}")
+            if len(text) > 400:
+                print(f"    ... [truncated {len(text) - 400} chars]")
+
+        if 'user_prompt' in sample and sample['user_prompt']:
+            prompt = sample['user_prompt']
+            print(f"\n  [User Prompt Field] (length: {len(prompt)} chars):")
+            print(f"    {prompt[:300]}")
+            if len(prompt) > 300:
+                print(f"    ... [truncated]")
+
+        if 'harmful_completion' in sample and sample['harmful_completion']:
+            completion = sample['harmful_completion']
+            print(f"\n  [Harmful Completion Field] (length: {len(completion)} chars):")
+            print(f"    {completion[:400]}")
+            if len(completion) > 400:
+                print(f"    ... [truncated {len(completion) - 400} chars]")
+
+        if 'attack_prompt' in sample and sample['attack_prompt'] and not has_user_prompt:
             attack = sample['attack_prompt']
-            print(f"\n  [Attack Prompt Field]:")
-            print(f"    Length: {len(attack)} chars")
-            print(f"    Preview (first 300 chars):")
+            print(f"\n  [Attack Prompt Field - LEGACY] (length: {len(attack)} chars):")
             print(f"    {attack[:300]}")
             if len(attack) > 300:
-                print(f"    ... [truncated {len(attack) - 300} chars]")
-
-        if 'benign_query' in sample and sample['benign_query']:
-            print(f"\n  [Benign Query Field]:")
-            print(f"    {sample['benign_query'][:200]}")
+                print(f"    ... [truncated]")
 
     # Show sample benign examples
     print_subheader(f"Sample Benign Examples (first {n_samples})")
@@ -144,20 +204,56 @@ def audit_data_ingestion(data_path: str, n_samples: int = 3) -> Dict[str, Any]:
         print(f"  Category: {sample.get('category', 'N/A')}")
         print(f"  Fields: {list(sample.keys())}")
 
-        if 'prompt' in sample:
+        # Check completion status
+        has_text = bool(sample.get('text'))
+        has_completion = bool(sample.get('benign_completion'))
+        has_user_prompt = bool(sample.get('user_prompt'))
+
+        if has_text or has_completion:
+            print(f"\n  ✓ HAS COMPLETION DATA")
+        else:
+            print(f"\n  ❌ NO COMPLETION DATA (prompt-only)")
+
+        if 'text' in sample and sample['text']:
+            text = sample['text']
+            print(f"\n  [Pre-rendered Text Field] (length: {len(text)} chars):")
+            print(f"    {text[:400]}")
+            if len(text) > 400:
+                print(f"    ... [truncated]")
+
+        if 'user_prompt' in sample and sample['user_prompt']:
+            prompt = sample['user_prompt']
+            print(f"\n  [User Prompt Field] (length: {len(prompt)} chars):")
+            print(f"    {prompt[:300]}")
+            if len(prompt) > 300:
+                print(f"    ... [truncated]")
+
+        if 'benign_completion' in sample and sample['benign_completion']:
+            completion = sample['benign_completion']
+            print(f"\n  [Benign Completion Field] (length: {len(completion)} chars):")
+            print(f"    {completion[:400]}")
+            if len(completion) > 400:
+                print(f"    ... [truncated]")
+
+        if 'prompt' in sample and sample['prompt'] and not has_user_prompt:
             prompt = sample['prompt']
-            print(f"\n  [Prompt Field]:")
-            print(f"    Length: {len(prompt)} chars")
-            print(f"    Content:")
-            print(f"    {prompt[:400]}")
-            if len(prompt) > 400:
-                print(f"    ... [truncated {len(prompt) - 400} chars]")
+            print(f"\n  [Prompt Field - LEGACY] (length: {len(prompt)} chars):")
+            print(f"    {prompt[:300]}")
+            if len(prompt) > 300:
+                print(f"    ... [truncated]")
+
+    # Calculate completion percentage
+    harmful_with_completions = total_harmful - harmful_prompt_only
+    benign_with_completions = total_benign - benign_prompt_only
 
     return {
         'total_batches': len(batches),
         'total_harmful': total_harmful,
         'total_benign': total_benign,
-        'harmful_with_text': harmful_with_text,
+        'harmful_with_completions': harmful_with_completions,
+        'benign_with_completions': benign_with_completions,
+        'harmful_prompt_only': harmful_prompt_only,
+        'benign_prompt_only': benign_prompt_only,
         'batches': batches[:5]  # Keep first 5 for further testing
     }
 
@@ -897,7 +993,18 @@ def main():
     print(f"  ✓ {data_stats['total_batches']} batches loaded")
     print(f"  ✓ {data_stats['total_harmful']} harmful samples")
     print(f"  ✓ {data_stats['total_benign']} benign samples")
-    print(f"  ✓ {data_stats['harmful_with_text']}/{data_stats['total_harmful']} harmful have completions")
+
+    # Check completion coverage
+    harmful_with_comp = data_stats.get('harmful_with_completions', 0)
+    harmful_prompt_only = data_stats.get('harmful_prompt_only', data_stats['total_harmful'])
+
+    if harmful_with_comp > 0:
+        pct = harmful_with_comp / data_stats['total_harmful'] * 100
+        print(f"  ✓ {harmful_with_comp}/{data_stats['total_harmful']} harmful have completions ({pct:.1f}%)")
+    else:
+        print(f"  ❌ {harmful_with_comp}/{data_stats['total_harmful']} harmful have completions (0%)")
+        print(f"     WARNING: CB training will be INEFFECTIVE without completions!")
+        print(f"     Run: python scripts/prepare_cb_training.py")
 
     print(f"\nModel Configuration:")
     print(f"  ✓ {model_stats['trainable_params']:,} trainable (LoRA) params")
@@ -915,8 +1022,25 @@ def main():
     print(f"  ✓ Trainable with grads: {grad_stats['trainable_with_grad']}")
     print(f"  ✓ Frozen with grads: {grad_stats['frozen_with_grad']}")
 
+    # Overall verdict
+    print(f"\n{'─' * 80}")
+    issues = []
+    if harmful_with_comp == 0:
+        issues.append("No harmful completions - run prepare_cb_training.py")
+    if isolation_stats['diff_mean'] < 1e-6:
+        issues.append("Adapter isolation not verified (expected for fresh adapters)")
+    if grad_stats['trainable_with_grad'] == 0:
+        issues.append("No gradients on trainable params")
+
+    if not issues:
+        print(f"  ✅ ALL CHECKS PASSED - Ready for training!")
+    else:
+        print(f"  ⚠️  ISSUES FOUND:")
+        for issue in issues:
+            print(f"     - {issue}")
+
     print(f"\n{'#' * 80}")
-    print(f"  ALL DIAGNOSTICS COMPLETE")
+    print(f"  DIAGNOSTICS COMPLETE")
     print(f"{'#' * 80}\n")
 
 

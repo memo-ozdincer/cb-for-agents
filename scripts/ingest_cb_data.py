@@ -554,16 +554,16 @@ def create_batches(harmful: List[Dict], benign: List[Dict], batch_size: int = 16
 
 def main():
     setup_directories()
-    
+
     harmful_pairs = load_harmful_data()
     benign_pairs = load_benign_data()
-    
+
     print("\n" + "="*60)
     print("              CIRCUIT BREAKER INGESTION SUMMARY")
     print("="*60)
     print(f"  Total Harmful Pairs: {len(harmful_pairs)}")
     print(f"  Total Benign Pairs:  {len(benign_pairs)}")
-    
+
     # Identify limiting reagent
     if harmful_pairs and benign_pairs:
         ratio = len(harmful_pairs) / len(benign_pairs)
@@ -578,28 +578,30 @@ def main():
         else:
             print(f"\n  ✅ Data is reasonably balanced (ratio: {ratio:.2f}:1 harmful:benign).")
     print("="*60)
-    
-    # Write raw pairs
+
+    # Write raw pairs (Step 1 of pipeline)
     backups_dir = CB_DIR / '_backups'
     harmful_out = CB_DIR / 'harmful' / 'harmful_pairs.jsonl'
     benign_out = CB_DIR / 'benign' / 'benign_pairs.jsonl'
-    batches_out = CB_DIR / 'cb_training_batches.jsonl'
 
     backup_if_exists(harmful_out, backups_dir)
     backup_if_exists(benign_out, backups_dir)
-    backup_if_exists(batches_out, backups_dir)
 
     write_jsonl(harmful_out, harmful_pairs)
     write_jsonl(benign_out, benign_pairs)
-    
-    # Create and write batches
-    if harmful_pairs and benign_pairs:
-        batches = create_batches(harmful_pairs, benign_pairs)
-        write_jsonl(batches_out, batches)
-        max_batches_possible = min(len(harmful_pairs), len(benign_pairs)) // 8  # 8 per side
-        print(f"\n✅ Created {len(batches)} balanced batches (max possible: {max_batches_possible}).")
-    else:
-        print("\n⚠️  Insufficient data to create batches.")
+
+    print("\n" + "="*60)
+    print("  NEXT STEPS:")
+    print("="*60)
+    print("  1. Extract completions (REQUIRED for proper CB training):")
+    print("     python scripts/format_for_cb/split_out_cb_completions.py --fujitsu-success-only")
+    print("")
+    print("  2. Create training batches from completions:")
+    print("     python scripts/format_for_cb/create_cb_batches.py")
+    print("")
+    print("  Or run the full pipeline:")
+    print("     python scripts/prepare_cb_training.py")
+    print("="*60)
 
 if __name__ == "__main__":
     main()
