@@ -563,39 +563,119 @@ def main():
         "skipped": 0,
     }
     
+    # Separate records into those with existing completions vs needing generation
+    records_with_existing = []
+    records_needing_generation = []
+    
+    for record in all_records:
+        stats["total"] += 1
+        has_existing = record.get("has_real_completion") or record.get("assistant_raw")
+        
+        if has_existing:
+            stats["with_existing"] += 1
+            records_with_existing.append(record)
+        elif args.skip_generation or harness is None:
+            stats["skipped"] += 1
+        else:
+            records_needing_generation.append(record)
+    
+    logger.info(f"Records with existing completions: {len(records_with_existing)}")
+    logger.info(f"Records needing generation: {len(records_needing_generation)}")
+    
     with open(args.output, "w", encoding="utf-8") as f:
-        for i, record in enumerate(all_records):
-            if (i + 1) % 100 == 0:
-                logger.info(f"Processing {i+1}/{len(all_records)}...")
-            
-            stats["total"] += 1
-            
-            # Check if already has completion
-            has_existing = record.get("has_real_completion") or record.get("assistant_raw")
-            
-            if has_existing:
-                stats["with_existing"] += 1
-            elif args.skip_generation or harness is None:
-                stats["skipped"] += 1
-                continue
-            else:
-                stats["generated"] += 1
-            
-            # Generate/format record
+        # First, write records with existing completions
+        for i, record in enumerate(records_with_existing):
             try:
                 ds_record = generate_ds_record(
                     record,
-                    harness,
-                    config,
+                    harness=None,
+                    config=config,
                     redact_harmful_prompt=args.redact_harmful_prompt,
                 )
-                
                 if ds_record:
                     f.write(json.dumps(ds_record, ensure_ascii=False) + "\n")
                     stats["successful"] += 1
             except Exception as e:
                 logger.error(f"Error processing {record['id']}: {e}")
-                continue
+            
+            # Flush every 1000 records to ensure data is saved
+            if (i + 1) % 1000 == 0:
+                f.flush()
+                logger.info(f"Written {i + 1}/{len(records_with_existing)} existing records...")
+        
+        # Flush after existing records
+        f.flush()
+        logger.info(f"Finished writing {stats['successful']} existing records")
+        
+        # Now batch-generate for records that need LLM inference
+        if records_needing_generation and harness is not None:
+            stats["generated"] = len(records_needing_generation)
+            
+            # Prepare batch of prompts - larger batch = more efficient vLLM utilization
+            batch_size = 512  # vLLM can handle large batches efficiently with TP
+            total_batches = (len(records_needing_generation) + batch_size - 1) // batch_size
+            
+            for batch_idx in range(total_batches):
+                start_idx = batch_idx * batch_size
+                end_idx = min(start_idx + batch_size, len(records_needing_generation))
+                batch_records = records_needing_generation[start_idx:end_idx]
+                
+                logger.info(f"Processing batch {batch_idx + 1}/{total_batches} ({len(batch_records)} records)...")
+                
+                # Prepare prompts for this batch
+                batch_prompts = []
+                for record in batch_records:
+                    user_prompt = record["user_prompt"]
+                    expected_tool = record.get("expected_tool", "")
+                    simulated_tool = record.get("simulated_tool", "")
+                    tools = get_tools_for_attack(expected_tool, simulated_tool) if expected_tool else list(STANDARD_TOOLS.values())[:4]
+                    
+                    batch_prompts.append({
+                        "user_prompt": user_prompt,
+                        "tools": tools,
+                        "expected_tool": expected_tool,
+                        "prompt_id": record["id"],
+                        "attack_metadata": {
+                            "source_dataset": record["source"],
+                            **record.get("metadata", {}),
+                        },
+                    })
+                
+                # Generate for entire batch
+                try:
+                    results = harness.generate_batch(batch_prompts, config)
+                    
+                    batch_successful = 0
+                    for record, result in zip(batch_records, results):
+                        cb_record = result.to_cb_record()
+                        if cb_record:
+                            f.write(json.dumps(cb_record, ensure_ascii=False) + "\n")
+                            stats["successful"] += 1
+                            batch_successful += 1
+                    
+                    # CRITICAL: Flush after each batch to prevent data loss on timeout
+                    f.flush()
+                    logger.info(f"Batch {batch_idx + 1}/{total_batches}: {batch_successful}/{len(batch_records)} successful, flushed to disk")
+                    
+                except Exception as e:
+                    logger.error(f"Error in batch {batch_idx + 1}: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    # Fall back to individual processing
+                    for record in batch_records:
+                        try:
+                            ds_record = generate_ds_record(
+                                record,
+                                harness,
+                                config,
+                                redact_harmful_prompt=args.redact_harmful_prompt,
+                            )
+                            if ds_record:
+                                f.write(json.dumps(ds_record, ensure_ascii=False) + "\n")
+                                stats["successful"] += 1
+                        except Exception as e2:
+                            logger.error(f"Error processing {record['id']}: {e2}")
+                    f.flush()  # Flush after fallback too
     
     logger.info(f"Generation complete!")
     logger.info(f"Stats: {json.dumps(stats, indent=2)}")

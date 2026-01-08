@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH -A aip-rgrosse
 #SBATCH -D /project/6105522/memoozd/harmful-agents-meta-dataset
-#SBATCH --time=06:30:00
+#SBATCH --time=08:00:00
 #SBATCH --gres=gpu:l40s:4
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=96GB
@@ -10,14 +10,14 @@
 #SBATCH --error=logs/%x_%j.err
 
 # =============================================================================
-# CB Data Generation - Killarney 1×L40S
+# CB Data Generation - Killarney 4×L40S (Tensor Parallel)
 # =============================================================================
 #
 # Generates Circuit Breaker training data using abliterated model
-# Uses vLLM for high-throughput inference
+# Uses vLLM with tensor_parallel=4 for high-throughput batched inference
 #
-# Hardware: 1x NVIDIA L40S (48GB VRAM)
-# Estimated time: ~2-3 hours for full dataset
+# Hardware: 4x NVIDIA L40S (48GB VRAM each = 192GB total)
+# Estimated time: ~1-2 hours for full dataset with TP=4
 #
 # Submit:
 #   cd /project/6105522/memoozd/harmful-agents-meta-dataset
@@ -94,7 +94,7 @@ echo "CB Data Generation - Killarney"
 echo "========================================"
 echo "Job ID: $SLURM_JOB_ID"
 echo "Date: $(date)"
-echo "GPU: 1 x L40S 48GB"
+echo "GPU: 4 x L40S 48GB (tensor_parallel=4)"
 echo "Model: mlabonne/Meta-Llama-3.1-8B-Instruct-abliterated"
 echo "========================================"
 
@@ -105,11 +105,12 @@ echo "========================================"
 # IMPORTANT: Use abliterated model so it actually generates harmful completions
 # Standard Llama-3.1-Instruct will refuse!
 
+# Using tensor_parallel=4 to shard model across 4 GPUs for faster inference
 python scripts/cb_data_generation/run_pipeline.py \
     --all \
     --model mlabonne/Meta-Llama-3.1-8B-Instruct-abliterated \
     --backend vllm \
-    --tensor-parallel 1 \
+    --tensor-parallel 4 \
     --temperature 0.7 \
     --num-samples 3 \
     --output-dir data/circuit_breakers/
@@ -122,4 +123,4 @@ echo "  Ds: data/circuit_breakers/ds/circuit_breaker_set.jsonl"
 echo "  Dr: data/circuit_breakers/dr/retain_set.jsonl"
 echo "  Eval: data/circuit_breakers/eval/eval_set.jsonl"
 echo "  Report: data/circuit_breakers/quality_report.json"
-echo "========================================"
+echo "========================================""
