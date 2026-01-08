@@ -306,7 +306,8 @@ def generate_from_templates(
                     t = random.choice(cat_templates)
                     goals = cat_data.get("malicious_goals", ["do harmful action"])
                     goal = random.choice(goals)
-                    injection = t.format(malicious_goal=goal) if "{malicious_goal}" in t else t
+                    # Use replace() instead of format() to avoid KeyError on JSON braces
+                    injection = t.replace("{malicious_goal}", goal) if "{malicious_goal}" in t else t
 
                     benign_contexts = template.get("benign_contexts", ["Help me with a task"])
                     benign = random.choice(benign_contexts)
