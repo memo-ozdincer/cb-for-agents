@@ -283,11 +283,13 @@ head -1 data/circuit_breakers/cb_training_batches.jsonl | python -m json.tool
 
 After running ingestion and completion extraction:
 
-| Category | Source | Count | Agentic |
-|----------|--------|------:|:-------:|
-| **Harmful (completions)** | Fujitsu B4 + B1/B3 + AgentDojo | **36,003** | 40.6% |
-| **Benign (completions)** | TAU2 + AgentDojo | **2,434** | 100% |
-| **Batches** | 1:1 balanced (batch_size=16) | **304** | — |
+| Category | Source | Count | Agentic | Data Type |
+|----------|--------|------:|:-------:|-----------|
+| **Harmful (completions)** | Fujitsu B4 + B1/B3 + AgentDojo | **36,003** | 40.6% | **Real** |
+| **Benign (completions)** | TAU2 + AgentDojo | **2,434** | 100% | **Real** |
+| **Batches** | 1:1 balanced (batch_size=16) | **304** | — | — |
+
+> **Note:** All data in the default training files is **real** (from original datasets). Synthetic/augmented data is optional and stored separately in `data/augmented/`.
 
 **Agentic Breakdown (Harmful):**
 
@@ -1380,14 +1382,15 @@ Usually indicates:
 source cb_env/bin/activate
 huggingface-cli login
 
-# Data ingestion
+# Data ingestion (creates real data files)
 python scripts/ingest_cb_data.py
 
-# Data augmentation (local)
-python scripts/augmentation/run_augmentation_pipeline.py
+# Create training batches
+python scripts/format_for_cb/create_cb_batches.py
 
-# Data augmentation (SLURM)
-sbatch slurm/Killarney/killarney_augmentation.sbatch
+# [OPTIONAL] Data augmentation - generates SYNTHETIC data
+# python scripts/augmentation/run_augmentation_pipeline.py
+# sbatch slurm/Killarney/killarney_augmentation.sbatch
 
 # Train (single GPU test)
 python scripts/train_circuit_breaker.py --total-steps 5 --no-wandb

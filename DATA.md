@@ -12,6 +12,7 @@
 
 1. [Overview](#1-overview)
 2. [Quick Reference Table](#2-quick-reference-table)
+   - [2.1 Real vs Synthetic Data](#21-real-vs-synthetic-data)
 3. [Dataset Details](#3-dataset-details)
    - [3.1 AgentDojo](#31-agentdojo)
    - [3.2 Fujitsu Agentic RAG Red Teaming](#32-fujitsu-agentic-rag-red-teaming)
@@ -25,7 +26,7 @@
 6. [File Paths & Verification](#6-file-paths--verification)
 7. [Current Data Statistics](#7-current-data-statistics)
 8. [Agentic Data Format](#8-agentic-data-format)
-9. [Data Augmentation Pipeline](#9-data-augmentation-pipeline)
+9. [Data Augmentation Pipeline (Optional)](#9-data-augmentation-pipeline)
 
 ---
 
@@ -61,21 +62,63 @@ This workspace contains 7 core datasets covering the full spectrum of agentic AI
 
 ## 2. Quick Reference Table
 
-| Dataset | Records | Type | Has Traces | Has Tool Calls | Agentic | License |
-|---------|--------:|------|:----------:|:--------------:|:-------:|---------|
-| **AgentDojo** | 3,315 | Traces | ✅ | ✅ | ✅ | Research |
-| **Fujitsu B4** | 13,246 | Tool Attacks | ✅ (generated) | ✅ | ✅ | CC BY 4.0 |
-| **Fujitsu B1/B3** | 22,946 | Text Attacks | ❌ | ❌ | ❌ | CC BY 4.0 |
-| **AgentHarm** | 476 | Prompts | ✅ (generated) | ✅ | ✅ | MIT |
-| **WebArena** | 812 | Tasks | ✅ (separate) | ❌ | ❌ | Apache 2.0 |
-| **TAU2-Bench** | ~2,458 | Tasks | ✅ | ✅ | ✅ | Apache 2.0 |
-| **AttackQA** | 25,335 | QA Pairs | ❌ | ❌ | ❌ | Apache 2.0 |
-| **WebLINX** | 100 | Turns (sample) | ✅ | ❌ | ❌ | MIT |
+| Dataset | Records | Type | Real Data | Needs Augmentation | License |
+|---------|--------:|------|:---------:|:------------------:|---------|
+| **AgentDojo** | 3,315 | Traces | ✅ Full traces | ❌ | Research |
+| **Fujitsu B4** | 13,246 | Tool Attacks | ✅ Attack definitions | Optional | CC BY 4.0 |
+| **Fujitsu B1/B3** | 22,946 | Text Attacks | ✅ Full completions | ❌ | CC BY 4.0 |
+| **AgentHarm** | 476 | Prompts | ✅ Prompts only | Yes (for completions) | MIT |
+| **WebArena** | 812 | Tasks | ✅ Task definitions | ❌ | Apache 2.0 |
+| **TAU2-Bench** | ~2,458 | Tasks | ✅ Full traces | ❌ | Apache 2.0 |
+| **AttackQA** | 25,335 | QA Pairs | ✅ QA pairs | ❌ | Apache 2.0 |
+| **WebLINX** | 100 | Turns (sample) | ✅ Navigation traces | ❌ | MIT |
 
 **Legend:**
-- **Has Traces:** Contains multi-turn conversation history
-- **Has Tool Calls:** Contains `tool_calls` in assistant messages
-- **Agentic:** Suitable for training agents (tool use, multi-turn reasoning)
+- **Real Data:** What exists in the original dataset files
+- **Needs Augmentation:** Whether the augmentation pipeline adds value (traces/completions)
+
+---
+
+## 2.1 Real vs Synthetic Data
+
+**This is critical to understand:**
+
+### Real/Original Data (use directly for training)
+
+| Source | What's Real | Location |
+|--------|-------------|----------|
+| **AgentDojo** | Full multi-turn traces with tool_calls from actual model runs | `data/agent_dojo/*.jsonl` |
+| **Fujitsu B1/B3** | Complete attack prompts + completions | `data/fujitsu/rag_poisoning_*.jsonl`, `safety_benchmark_*.jsonl` |
+| **Fujitsu B4** | Attack definitions (benign_query, injection, expected_tool, simulated_tool) | `data/fujitsu/orchestrator_attacks_*.jsonl` |
+| **TAU2** | Task descriptions and traces | `data/tau2_repo/` |
+| **WebArena** | Task definitions | `data/webarena/` |
+| **AttackQA** | QA pairs | `data/attackqa/attackqa.parquet` |
+| **AgentHarm** | Harmful prompts (NO completions) | `data/agent_harm/*.json` |
+
+### Synthetic/Generated Data (from augmentation pipeline)
+
+| Source | What's Generated | Location |
+|--------|------------------|----------|
+| **B4 Traces** | Conversation wrappers around real B4 attack definitions | `data/augmented/b4_traces.jsonl` |
+| **AgentHarm Completions** | Template-based harmful completions for real prompts | `data/augmented/agentharm_completions.jsonl` |
+| **Attack Scenarios** | Entirely synthetic from YAML templates | `data/augmented/attack_scenarios.jsonl` |
+
+### What's in the Training Files
+
+The files used for CB training contain **only real data**:
+
+```
+data/circuit_breakers/harmful/harmful_pairs.completions.jsonl
+  → Fujitsu B1/B3 completions (real)
+  → Fujitsu B4 attack definitions (real)
+  → AgentDojo security failures (real)
+
+data/circuit_breakers/benign/benign_pairs.completions.jsonl
+  → TAU2 task traces (real)
+  → AgentDojo successful traces (real)
+```
+
+**The augmentation pipeline is OPTIONAL** - it adds synthetic traces but is not required for training.
 
 ---
 
@@ -243,14 +286,16 @@ The augmentation pipeline (`scripts/augmentation/generate_b4_traces.py`) convert
 
 ### 3.3 AgentHarm
 
-**Purpose:** Benchmark for harmful agent behavior (prompts only → with generated completions)
+**Purpose:** Benchmark for harmful agent behavior (prompts only)
+
+> **⚠️ Important:** AgentHarm contains **prompts only, no completions**. It is NOT included in the default CB training data. To use it, you must run the optional augmentation pipeline to generate synthetic completions.
 
 **What makes it unique:**
 - Paired benign/harmful tasks to test over-refusal
 - Tool-using, multi-turn scenarios
 - Broad harm taxonomy (8 categories)
 - Augmented variations for robustness testing
-- **Now includes generated agentic completions** (v2.0 via augmentation pipeline)
+- Contains `target_functions` field indicating which tools would be used
 
 **Paths:**
 ```
@@ -293,9 +338,9 @@ Chat:            52 + 8 = 60
 Total:           476 evaluation instances (208 with target_functions)
 ```
 
-**Augmentation (v2.0):**
+**Optional Augmentation (Synthetic):**
 
-The `scripts/augmentation/generate_agentharm_completions.py` script generates full agentic traces from AgentHarm prompts:
+If you want to include AgentHarm in training, the `scripts/augmentation/generate_agentharm_completions.py` script generates **synthetic** agentic traces from the real AgentHarm prompts:
 
 ```json
 {
@@ -866,7 +911,9 @@ The trainer (`scripts/circuit_breakers/trainer.py`) handles agentic data by:
 
 ---
 
-## 9. Data Augmentation Pipeline
+## 9. Data Augmentation Pipeline (Optional - Generates Synthetic Data)
+
+> **⚠️ This pipeline is OPTIONAL.** The default training data (`harmful_pairs.completions.jsonl`) contains only real data and is sufficient for CB training. This pipeline generates **synthetic** traces for additional coverage.
 
 Version 2.0 includes a comprehensive augmentation pipeline for generating additional agentic harm data.
 
