@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH -A aip-rgrosse
 #SBATCH -D /project/6105522/memoozd/harmful-agents-meta-dataset
-#SBATCH --time=8:00:00
+#SBATCH --time=4:00:00
 #SBATCH --gres=gpu:l40s:4
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=96GB
