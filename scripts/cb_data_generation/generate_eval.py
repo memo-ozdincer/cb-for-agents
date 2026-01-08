@@ -257,11 +257,6 @@ def load_agentdojo_eval(
     count = 0
     
     for jsonl_path in sorted(directory.glob("*.jsonl")):
-        # Skip metadata files
-        first_line = jsonl_path.read_text().split("\n")[0]
-        if '"metadata"' in first_line and '"benchmark"' in first_line:
-            continue
-        
         with open(jsonl_path, "r", encoding="utf-8") as f:
             for line in f:
                 if not line.strip():
@@ -269,6 +264,10 @@ def load_agentdojo_eval(
                 try:
                     record = json.loads(line)
                 except json.JSONDecodeError:
+                    continue
+                
+                # Skip metadata lines (first line in file)
+                if "benchmark" in record.get("metadata", {}) and "messages" not in record:
                     continue
                 
                 messages = record.get("messages", [])

@@ -122,11 +122,6 @@ def load_agentdojo_benign(
     count = 0
     
     for jsonl_path in sorted(directory.glob("*.jsonl")):
-        # Skip metadata files
-        first_line = jsonl_path.read_text().split("\n")[0]
-        if '"metadata"' in first_line and '"benchmark"' in first_line:
-            continue
-        
         with open(jsonl_path, "r", encoding="utf-8") as f:
             for line in f:
                 if not line.strip():
@@ -134,6 +129,10 @@ def load_agentdojo_benign(
                 try:
                     record = json.loads(line)
                 except json.JSONDecodeError:
+                    continue
+                
+                # Skip metadata lines (first line in file)
+                if "benchmark" in record.get("metadata", {}) and "messages" not in record:
                     continue
                 
                 messages = record.get("messages", [])
@@ -165,12 +164,12 @@ def load_agentdojo_benign(
                 for msg in reversed(messages):
                     if msg.get("role") == "assistant":
                         last_assistant = msg.get("content", "") or ""
-                        last_tool_calls = msg.get("tool_calls", [])
+                        last_tool_calls = msg.get("tool_calls") or []
                         break
                 
                 # Format tool calls
                 tool_calls_structured = []
-                for tc in last_tool_calls:
+                for tc in last_tool_calls or []:
                     if isinstance(tc, dict):
                         func = tc.get("function", tc)
                         tool_calls_structured.append({
