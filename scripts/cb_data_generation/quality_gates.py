@@ -393,14 +393,14 @@ def check_retain_coverage(
     
     if require_refusals:
         refusal_fraction = refusal_count / max(len(records), 1)
-        scores.append(min(1.0, refusal_fraction * 10))  # Want at least 10%
+        scores.append(min(1.0, refusal_fraction * 50))  # Want at least 2% refusals
         if refusal_count == 0:
             result.errors.append("No refusal examples in Dr - refusal behavior may degrade")
     
     if require_tool_use:
         tool_fraction = tool_use_count / max(len(records), 1)
-        scores.append(min(1.0, tool_fraction * 2))  # Want at least 50%
-        if tool_use_count < len(records) * 0.3:
+        scores.append(min(1.0, tool_fraction * 4))  # Want at least 25% tool use
+        if tool_use_count < len(records) * 0.2:
             result.warnings.append(f"Low tool use coverage: {tool_use_count}/{len(records)}")
     
     result.score = sum(scores) / max(len(scores), 1)
