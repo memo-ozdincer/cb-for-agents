@@ -203,57 +203,74 @@ def load_tau2_traces(
     directory: Path,
     limit: Optional[int] = None,
 ) -> Generator[Dict[str, Any], None, None]:
-    """Load TAU2-Bench task traces."""
+    """Load TAU2-Bench task traces from results JSON files."""
     count = 0
     
-    # Look for TAU2 data files
-    for jsonl_path in sorted(directory.glob("**/*.jsonl")):
-        with open(jsonl_path, "r", encoding="utf-8") as f:
-            for line in f:
-                if not line.strip():
-                    continue
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                
-                # TAU2 format varies - adapt as needed
-                messages = record.get("messages", record.get("conversation", []))
-                task = record.get("task", record.get("instruction", ""))
-                
-                if not messages and not task:
-                    continue
-                
-                # Extract or construct user prompt
-                user_prompt = task
-                if not user_prompt and messages:
-                    for msg in messages:
-                        if msg.get("role") == "user":
-                            user_prompt = msg.get("content", "")
-                            break
-                
-                # Get assistant response
-                assistant_raw = ""
-                for msg in reversed(messages) if messages else []:
-                    if msg.get("role") == "assistant":
-                        assistant_raw = msg.get("content", "")
-                        break
-                
-                yield {
-                    "id": f"tau2_{count}",
-                    "source": "tau2",
-                    "user_prompt": user_prompt,
-                    "assistant_raw": assistant_raw,
-                    "messages": messages,
-                    "metadata": {
-                        "file": jsonl_path.name,
-                        "domain": record.get("domain", "general"),
-                    },
-                }
-                
-                count += 1
-                if limit and count >= limit:
-                    return
+    # Look for TAU2 results JSON files (not JSONL)
+    for json_path in sorted(directory.glob("**/*.json")):
+        try:
+            with open(json_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            continue
+        
+        # TAU2 results have 'simulations' list
+        simulations = data.get("simulations", [])
+        tasks = {t.get("id"): t for t in data.get("tasks", [])}
+        info = data.get("info", {})
+        domain = info.get("environment_info", {}).get("domain_name", "unknown")
+        
+        for sim in simulations:
+            messages = sim.get("messages", [])
+            if not messages:
+                continue
+            
+            # Get task description as context
+            task_id = sim.get("task_id")
+            task = tasks.get(task_id, {})
+            task_desc = task.get("description", "")
+            
+            # Extract user prompt from first user message
+            user_prompt = task_desc
+            for msg in messages:
+                if msg.get("role") == "user":
+                    user_prompt = msg.get("content", "") or task_desc
+                    break
+            
+            # Get assistant response with tool calls
+            assistant_raw = ""
+            tool_calls_structured = []
+            for msg in reversed(messages):
+                if msg.get("role") == "assistant":
+                    assistant_raw = msg.get("content", "") or ""
+                    raw_tool_calls = msg.get("tool_calls") or []
+                    for tc in raw_tool_calls:
+                        if isinstance(tc, dict):
+                            func = tc.get("function", tc)
+                            tool_calls_structured.append({
+                                "name": func.get("name", ""),
+                                "arguments": func.get("arguments", {}),
+                            })
+                    break
+            
+            yield {
+                "id": f"tau2_{domain}_{count}",
+                "source": "tau2",
+                "user_prompt": user_prompt,
+                "assistant_raw": assistant_raw,
+                "tool_calls_structured": tool_calls_structured,
+                "messages": messages,
+                "metadata": {
+                    "file": json_path.name,
+                    "domain": domain,
+                    "task_id": task_id,
+                    "termination_reason": sim.get("termination_reason"),
+                },
+            }
+            
+            count += 1
+            if limit and count >= limit:
+                return
 
 
 def generate_refusal_examples(
@@ -289,10 +306,12 @@ def load_fujitsu_b4_benign(
     limit: Optional[int] = None,
 ) -> Generator[Dict[str, Any], None, None]:
     """
-    Load Fujitsu B4 records where attack FAILED - these are examples of
-    correct tool selection behavior we want to preserve.
+    Load Fujitsu B4 benign queries with correct tool calls.
+    We use the benign_query field (without injection) and the expected_tool
+    to create examples of correct tool selection behavior.
     """
     count = 0
+    seen_queries = set()  # Deduplicate similar queries
     
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
@@ -303,16 +322,18 @@ def load_fujitsu_b4_benign(
             except json.JSONDecodeError:
                 continue
             
-            # Only include FAILED attacks (model chose correct tool)
-            if record.get("success", True):
-                continue
-            
             # Use benign query (without injection) for retain set
             user_prompt = record.get("benign_query", "")
             expected_tool = record.get("expected_tool", "")
             
             if not user_prompt or not expected_tool:
                 continue
+            
+            # Deduplicate by query prefix
+            query_key = user_prompt[:100].lower()
+            if query_key in seen_queries:
+                continue
+            seen_queries.add(query_key)
             
             # Create a "correct" tool call completion
             from scripts.cb_data_generation.tool_format import format_tool_call_output, ToolCall
@@ -402,8 +423,8 @@ def main():
     parser.add_argument(
         "--tau2-dir",
         type=Path,
-        default=BASE_DIR / "data" / "tau2_repo",
-        help="Directory containing TAU2 data",
+        default=BASE_DIR / "data" / "tau2_repo" / "data" / "tau2" / "results" / "final",
+        help="Directory containing TAU2 results JSON files",
     )
     parser.add_argument(
         "--fujitsu-b4",
