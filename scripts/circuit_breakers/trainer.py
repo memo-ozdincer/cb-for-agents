@@ -47,7 +47,7 @@ from accelerate import Accelerator
 from accelerate.utils import set_seed
 
 from .config import CircuitBreakerConfig
-from .hf_utils import resolve_hf_token
+from .hf_utils import resolve_hf_token, resolve_local_model_path
 from scripts.utils.wandb_logging import (
     build_wandb_init_kwargs,
     config_to_dict_for_wandb,
@@ -1018,10 +1018,20 @@ class CircuitBreakerTrainer:
         
         # Load tokenizer (HF gated models require an auth token)
         hf_token = resolve_hf_token()
+        
+        # In offline mode, resolve model ID to local cache path to avoid API calls
+        offline_mode = os.environ.get("HF_HUB_OFFLINE", "0") == "1"
+        model_path = config.base_model
+        if offline_mode:
+            model_path = resolve_local_model_path(config.base_model, hf_token)
+            if model_path != config.base_model:
+                print(f"  Resolved to local path: {model_path}")
+        
         self.tokenizer = AutoTokenizer.from_pretrained(
-            config.base_model,
+            model_path,
             token=hf_token,
             trust_remote_code=True,
+            local_files_only=offline_mode,
         )
         # Right padding is typical for causal LM training.
         if getattr(self.tokenizer, "padding_side", None) != "right":
@@ -1061,6 +1071,14 @@ class CircuitBreakerTrainer:
         self.accelerator.print(f"Loading model: {self.config.base_model}")
 
         hf_token = resolve_hf_token()
+        
+        # In offline mode, resolve model ID to local cache path to avoid API calls
+        offline_mode = os.environ.get("HF_HUB_OFFLINE", "0") == "1"
+        model_path = self.config.base_model
+        if offline_mode:
+            model_path = resolve_local_model_path(self.config.base_model, hf_token)
+            if model_path != self.config.base_model:
+                self.accelerator.print(f"  Resolved to local path: {model_path}")
 
         # Determine dtype
         dtype_map = {
@@ -1076,11 +1094,12 @@ class CircuitBreakerTrainer:
         device_map = "auto" if self.accelerator.num_processes == 1 else None
 
         self.model = AutoModelForCausalLM.from_pretrained(
-            self.config.base_model,
+            model_path,
             torch_dtype=torch_dtype,
             device_map=device_map,
             trust_remote_code=True,
             token=hf_token,
+            local_files_only=offline_mode,
         )
 
         if self.config.gradient_checkpointing:
