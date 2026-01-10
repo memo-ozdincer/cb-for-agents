@@ -73,6 +73,10 @@ mkdir -p "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$FLASHINFER_WORKSPACE_DIR"
 export VLLM_NO_USAGE_STATS=1
 export DO_NOT_TRACK=1
 
+# Force vLLM to use flash_attn backend instead of flashinfer
+# (flashinfer has hardcoded ~/.cache paths that ignore env vars in subprocesses)
+export VLLM_ATTENTION_BACKEND=FLASH_ATTN
+
 # DO NOT SET TRANSFORMERS_CACHE - deprecated and causes cache fragmentation
 
 # =============================================================================
