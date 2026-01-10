@@ -163,11 +163,13 @@ def load_model_and_tokenizer(
     if offline_mode:
         logger.info("  (offline mode - using cached files only)")
     
+    # use_fast=False avoids Mistral regex patching which makes API calls even in offline mode
     tokenizer = AutoTokenizer.from_pretrained(
         model_path,
         token=hf_token,
         trust_remote_code=True,
         local_files_only=offline_mode,
+        use_fast=not offline_mode,  # Use slow tokenizer in offline mode to avoid API calls
     )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token

@@ -59,6 +59,7 @@ export TRANSFORMERS_CACHE="$CACHE_ROOT/hf/transformers"
 export TORCH_HOME="$CACHE_ROOT/torch"
 export WANDB_DIR="$CACHE_ROOT/wandb"
 export HF_HUB_OFFLINE=1  # Fail fast if model not cached (no internet on compute nodes)
+export TRANSFORMERS_OFFLINE=1  # Disable all network calls in transformers
 export WANDB_MODE=offline  # W&B also needs offline mode
 
 # =============================================================================

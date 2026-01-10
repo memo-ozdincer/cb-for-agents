@@ -57,6 +57,7 @@ export HF_DATASETS_CACHE="$CACHE_ROOT/hf/datasets"
 export TRANSFORMERS_CACHE="$CACHE_ROOT/hf/transformers"
 export TORCH_HOME="$CACHE_ROOT/torch"
 export HF_HUB_OFFLINE=1  # Fail fast if model not cached (no internet on compute nodes)
+export TRANSFORMERS_OFFLINE=1  # Disable all network calls in transformers
 
 # =============================================================================
 # Job Info
