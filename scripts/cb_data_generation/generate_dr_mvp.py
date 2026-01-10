@@ -163,6 +163,86 @@ def remove_injection(prompt: str, benign_query: Optional[str] = None) -> str:
 
 
 # =============================================================================
+# vLLM Backend (for 4x H100 tensor parallelism)
+# =============================================================================
+
+class VLLMBackend:
+    """vLLM backend for high-throughput batched inference with tensor parallelism."""
+    
+    def __init__(
+        self,
+        model_path: str,
+        tensor_parallel_size: int = 1,
+        max_model_len: int = 4096,
+        dtype: str = "bfloat16",
+    ):
+        from vllm import LLM, SamplingParams
+        
+        hf_token = resolve_hf_token()
+        offline_mode = os.environ.get("HF_HUB_OFFLINE", "0") == "1"
+        
+        # Resolve to local path if in offline mode
+        if offline_mode:
+            resolved_path = resolve_local_model_path(model_path, hf_token)
+            if resolved_path != model_path:
+                logger.info(f"  Resolved to local path: {resolved_path}")
+            model_path = resolved_path
+        
+        logger.info(f"Loading vLLM model: {model_path}")
+        logger.info(f"  Tensor parallel size: {tensor_parallel_size}")
+        
+        self.llm = LLM(
+            model=model_path,
+            tensor_parallel_size=tensor_parallel_size,
+            max_model_len=max_model_len,
+            dtype=dtype,
+            trust_remote_code=True,
+            enable_auto_tool_choice=True,
+            tool_call_parser="llama3_json",
+        )
+        self.tokenizer = self.llm.get_tokenizer()
+        self.SamplingParams = SamplingParams
+    
+    def generate_batch(
+        self,
+        prompts: List[str],
+        temperature: float = 0.3,
+        max_tokens: int = 256,
+        top_p: float = 0.95,
+    ) -> List[str]:
+        """Generate responses for a batch of prompts."""
+        sampling_params = self.SamplingParams(
+            temperature=temperature,
+            max_tokens=max_tokens,
+            top_p=top_p,
+            skip_special_tokens=False,
+        )
+        
+        outputs = self.llm.generate(prompts, sampling_params)
+        return [output.outputs[0].text for output in outputs]
+    
+    def format_prompt_with_tools(
+        self,
+        messages: List[Dict[str, str]],
+        tools: List[Dict[str, Any]],
+    ) -> str:
+        """Format messages with tools using tokenizer's chat template."""
+        try:
+            return self.tokenizer.apply_chat_template(
+                messages,
+                tools=tools,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+        except TypeError:
+            return self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+
+
+# =============================================================================
 # Model Loading and Generation (reuse from generate_ds_mvp)
 # =============================================================================
 
@@ -525,6 +605,150 @@ def build_dr_mvp(
     return dr_samples, stats
 
 
+def build_dr_mvp_vllm(
+    ds_samples: List[Dict[str, Any]],
+    vllm_backend: "VLLMBackend",
+    tools: List[Dict[str, Any]],
+    system_prompt: str,
+    batch_size: int = 32,
+    temperature: float = 0.3,
+    max_tokens: int = 256,
+    verbose: bool = True,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """
+    Build Dr using vLLM backend with batched generation.
+    """
+    dr_samples = []
+    stats = {
+        "total": 0,
+        "correct_behavior": 0,
+        "wrong_tool": 0,
+        "no_tool_call": 0,
+        "format_errors": 0,
+    }
+    
+    # Prepare all prompts
+    logger.info(f"Preparing {len(ds_samples)} prompts for batched Dr generation...")
+    all_prompts = []
+    sample_data = []
+    
+    for ds_sample in ds_samples:
+        labels = ds_sample.get("labels", {})
+        expected_tool = labels.get("expected_tool", "")
+        metadata = ds_sample.get("metadata", {})
+        benign_query = metadata.get("benign_query", "")
+        
+        if not benign_query:
+            messages = ds_sample.get("messages", [])
+            for msg in messages:
+                if msg.get("role") == "user":
+                    original_prompt = msg.get("content", "")
+                    benign_query = remove_injection(original_prompt)
+                    break
+        
+        if not benign_query:
+            continue
+        
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": benign_query},
+        ]
+        prompt = vllm_backend.format_prompt_with_tools(messages, tools)
+        all_prompts.append(prompt)
+        sample_data.append({
+            "ds_sample": ds_sample,
+            "messages": messages,
+            "benign_query": benign_query,
+            "expected_tool": expected_tool,
+        })
+    
+    # Generate in batches
+    num_batches = (len(all_prompts) + batch_size - 1) // batch_size
+    all_responses = []
+    
+    logger.info(f"Generating responses in {num_batches} batches...")
+    
+    for batch_idx in tqdm(range(num_batches), desc="Generating Dr batches"):
+        start_idx = batch_idx * batch_size
+        end_idx = min(start_idx + batch_size, len(all_prompts))
+        batch_prompts = all_prompts[start_idx:end_idx]
+        
+        try:
+            batch_responses = vllm_backend.generate_batch(
+                batch_prompts,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            all_responses.extend(batch_responses)
+        except Exception as e:
+            logger.error(f"Batch {batch_idx} generation error: {e}")
+            all_responses.extend([""] * len(batch_prompts))
+    
+    # Process results
+    logger.info("Processing generated responses...")
+    for data, response in tqdm(zip(sample_data, all_responses), total=len(sample_data), desc="Building Dr MVP"):
+        stats["total"] += 1
+        
+        tool_call = extract_tool_call(response)
+        observed_tool = tool_call["name"] if tool_call else None
+        expected_tool = data["expected_tool"]
+        
+        if observed_tool is None:
+            stats["no_tool_call"] += 1
+            is_correct = False
+        elif observed_tool == expected_tool:
+            stats["correct_behavior"] += 1
+            is_correct = True
+        else:
+            stats["wrong_tool"] += 1
+            is_correct = False
+        
+        is_valid, format_error = validate_llama_format(response)
+        if not is_valid:
+            stats["format_errors"] += 1
+        
+        if is_correct:
+            sample = {
+                "id": f"{data['ds_sample'].get('id')}_benign",
+                "messages": data["messages"],
+                "tools": "b4_standard_v1",
+                "assistant_raw": response,
+                "tool_calls_structured": [tool_call] if tool_call else [],
+                "labels": {
+                    "expected_tool": expected_tool,
+                    "observed_tool": observed_tool,
+                    "is_flip_success": False,
+                },
+                "metadata": {
+                    "split": "retain",
+                    "source": "b4",
+                    "paired_with": data["ds_sample"].get("id"),
+                    "benign_query": data["benign_query"],
+                    "format_valid": is_valid,
+                    "format_error": format_error if not is_valid else None,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                },
+            }
+            dr_samples.append(sample)
+    
+    success_rate = stats["correct_behavior"] / stats["total"] if stats["total"] > 0 else 0
+    stats["success_rate"] = success_rate
+    
+    logger.info("")
+    logger.info("=" * 60)
+    logger.info("DR MVP BUILD STATS (vLLM)")
+    logger.info("=" * 60)
+    logger.info(f"Total Ds samples:        {stats['total']}")
+    logger.info(f"Correct behavior (Dr):   {stats['correct_behavior']} ({success_rate:.1%})")
+    logger.info(f"Wrong tool:              {stats['wrong_tool']}")
+    logger.info(f"No tool call:            {stats['no_tool_call']}")
+    logger.info(f"Format errors:           {stats['format_errors']}")
+    logger.info(f"Success rate:            {success_rate:.1%}")
+    logger.info("=" * 60)
+    
+    return dr_samples, stats
+
+
 # =============================================================================
 # CLI
 # =============================================================================
@@ -564,10 +788,29 @@ def main():
         help="Model to use for generation",
     )
     parser.add_argument(
+        "--backend",
+        type=str,
+        choices=["transformers", "vllm"],
+        default="transformers",
+        help="Backend: 'transformers' (single GPU) or 'vllm' (multi-GPU tensor parallel)",
+    )
+    parser.add_argument(
+        "--tensor-parallel",
+        type=int,
+        default=1,
+        help="Tensor parallel size for vLLM (e.g., 4 for 4x H100)",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=32,
+        help="Batch size for vLLM generation (ignored for transformers)",
+    )
+    parser.add_argument(
         "--device",
         type=str,
         default="auto",
-        help="Device to use",
+        help="Device to use (transformers backend only)",
     )
     parser.add_argument(
         "--dtype",
@@ -634,28 +877,47 @@ def main():
         logger.info(f"Would write to: {args.output}")
         return 0
     
-    # Load model
+    # Load model based on backend
     dtype_map = {
         "bfloat16": torch.bfloat16,
         "float16": torch.float16,
         "float32": torch.float32,
     }
     
-    model, tokenizer = load_model_and_tokenizer(
-        args.model,
-        device=args.device,
-        torch_dtype=dtype_map[args.dtype],
-    )
-    
-    # Build Dr MVP
-    dr_samples, stats = build_dr_mvp(
-        ds_samples=ds_samples,
-        model=model,
-        tokenizer=tokenizer,
-        tools=tools,
-        system_prompt=system_prompt,
-        temperature=args.temperature,
-    )
+    if args.backend == "vllm":
+        logger.info(f"Using vLLM backend with tensor_parallel={args.tensor_parallel}")
+        vllm_backend = VLLMBackend(
+            model_path=args.model,
+            tensor_parallel_size=args.tensor_parallel,
+            dtype=args.dtype,
+        )
+        
+        # Build Dr MVP with vLLM (batched)
+        dr_samples, stats = build_dr_mvp_vllm(
+            ds_samples=ds_samples,
+            vllm_backend=vllm_backend,
+            tools=tools,
+            system_prompt=system_prompt,
+            batch_size=args.batch_size,
+            temperature=args.temperature,
+        )
+    else:
+        logger.info("Using transformers backend")
+        model, tokenizer = load_model_and_tokenizer(
+            args.model,
+            device=args.device,
+            torch_dtype=dtype_map[args.dtype],
+        )
+        
+        # Build Dr MVP with transformers
+        dr_samples, stats = build_dr_mvp(
+            ds_samples=ds_samples,
+            model=model,
+            tokenizer=tokenizer,
+            tools=tools,
+            system_prompt=system_prompt,
+            temperature=args.temperature,
+        )
     
     # Write output
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -679,7 +941,10 @@ def main():
         logger.warning("Dr:Ds ratio < 0.5 - consider adjusting temperature or filtering")
     
     # Clean up
-    del model
+    if args.backend == "vllm":
+        del vllm_backend
+    else:
+        del model
     torch.cuda.empty_cache()
     
     return 0

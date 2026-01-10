@@ -1,21 +1,24 @@
 #!/bin/bash
 #SBATCH --job-name=mvp_ds_gen
 #SBATCH --nodes=1
-#SBATCH --gpus-per-node=1
-#SBATCH --time=04:00:00
+#SBATCH --gpus-per-node=4
+#SBATCH --time=02:00:00
 #SBATCH --output=/scratch/memoozd/logs/%x_%j.out
 #SBATCH --error=/scratch/memoozd/logs/%x_%j.err
 #SBATCH --account=def-zhijing
 
 # =============================================================================
 # Stage 1 MVP: Generate Ds (Harmful Set) with Behavioral Filtering
-# Trillium 1×H100
+# Trillium 4×H100 (tensor parallel)
 # =============================================================================
 #
 # Generates Circuit Breaker Ds set using behavioral filtering:
 # - Only includes samples where the attack SUCCEEDS (model calls wrong tool)
-# - Uses vLLM for fast inference
+# - Uses vLLM with tensor_parallel=4 for high-throughput batched inference
 # - Outputs in Llama 3.1 tool-calling format
+#
+# Hardware: 4x NVIDIA H100 SXM (80GB each = 320GB total)
+# Estimated time: ~1-2 hours for full dataset
 #
 # Submit from $SCRATCH:
 #   cd /scratch/memoozd/harmful-agents-meta-dataset
@@ -89,7 +92,10 @@ print("torch:", torch.__version__)
 print("CUDA available:", torch.cuda.is_available())
 print("GPU count:", torch.cuda.device_count())
 if torch.cuda.is_available():
-    print(f"GPU 0: {torch.cuda.get_device_name(0)}")
+    for i in range(torch.cuda.device_count()):
+        print(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
+    if torch.cuda.device_count() < 4:
+        print(f"WARNING: Expected 4 GPUs for tensor_parallel=4, got {torch.cuda.device_count()}")
 else:
     print("ERROR: No GPU available!")
     sys.exit(1)
@@ -109,7 +115,8 @@ echo "Stage 1 MVP: Generate Ds (Behavioral Filtering)"
 echo "========================================"
 echo "Job ID: $SLURM_JOB_ID"
 echo "Date: $(date)"
-echo "GPU: 1 x H100 SXM 80GB"
+echo "GPU: 4 x H100 SXM 80GB (tensor_parallel=4)"
+echo "Backend: vLLM"
 echo "Model: mlabonne/Meta-Llama-3.1-8B-Instruct-abliterated"
 echo "========================================"
 
@@ -124,12 +131,16 @@ mkdir -p "$OUTPUT_DIR"
 # =============================================================================
 # IMPORTANT: Use abliterated model so attacks can succeed
 # Standard Llama-3.1-Instruct will refuse harmful completions!
+#
+# vLLM with tensor_parallel=4 provides ~10-20x throughput improvement
 
 python scripts/cb_data_generation/generate_ds_mvp.py \
     --b4-data data/fujitsu/orchestrator_attacks_combined_deduplicated.jsonl \
     --tool-schema configs/tool_schemas/b4_standard_v1.json \
     --model mlabonne/Meta-Llama-3.1-8B-Instruct-abliterated \
-    --device auto \
+    --backend vllm \
+    --tensor-parallel 4 \
+    --batch-size 64 \
     --dtype bfloat16 \
     --temperature 0.7 \
     --min-yield 0.10 \

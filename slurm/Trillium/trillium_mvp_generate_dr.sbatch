@@ -1,21 +1,24 @@
 #!/bin/bash
 #SBATCH --job-name=mvp_dr_gen
 #SBATCH --nodes=1
-#SBATCH --gpus-per-node=1
-#SBATCH --time=02:00:00
+#SBATCH --gpus-per-node=4
+#SBATCH --time=01:00:00
 #SBATCH --output=/scratch/memoozd/logs/%x_%j.out
 #SBATCH --error=/scratch/memoozd/logs/%x_%j.err
 #SBATCH --account=def-zhijing
 
 # =============================================================================
 # Stage 1 MVP: Generate Dr (Retain Set) as Paired Benign Twins
-# Trillium 1×H100
+# Trillium 4×H100 (tensor parallel)
 # =============================================================================
 #
 # Generates Circuit Breaker Dr set:
 # - Creates benign twins of Ds samples (removes injection)
 # - Only includes samples where model calls CORRECT tool
-# - Uses vLLM for fast inference
+# - Uses vLLM with tensor_parallel=4 for high-throughput inference
+#
+# Hardware: 4x NVIDIA H100 SXM (80GB each = 320GB total)
+# Estimated time: ~30-60 minutes
 #
 # DEPENDENCY: Run trillium_mvp_generate_ds.sbatch first!
 #
@@ -77,6 +80,24 @@ echo "  HF_HUB_OFFLINE: $HF_HUB_OFFLINE"
 echo ""
 
 # =============================================================================
+# GPU Check
+# =============================================================================
+python - << 'PY'
+import sys
+import torch
+print("torch:", torch.__version__)
+print("CUDA available:", torch.cuda.is_available())
+print("GPU count:", torch.cuda.device_count())
+if torch.cuda.is_available():
+    for i in range(torch.cuda.device_count()):
+        print(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
+else:
+    print("ERROR: No GPU available!")
+    sys.exit(1)
+PY
+echo ""
+
+# =============================================================================
 # Job Info
 # =============================================================================
 echo "========================================"
@@ -84,7 +105,8 @@ echo "Stage 1 MVP: Generate Dr (Paired Benign Twins)"
 echo "========================================"
 echo "Job ID: $SLURM_JOB_ID"
 echo "Date: $(date)"
-echo "GPU: 1 x H100 SXM 80GB"
+echo "GPU: 4 x H100 SXM 80GB (tensor_parallel=4)"
+echo "Backend: vLLM"
 echo "Model: meta-llama/Llama-3.1-8B-Instruct"
 echo "========================================"
 
@@ -108,12 +130,16 @@ echo "Ds sample count: $(wc -l < "$DS_FILE")"
 # =============================================================================
 # NOTE: Dr uses the standard (non-abliterated) model for benign twins
 # This ensures the retain set represents normal, safe behavior
+#
+# vLLM with tensor_parallel=4 provides ~10-20x throughput improvement
 
 python scripts/cb_data_generation/generate_dr_mvp.py \
     --ds-data "$DS_FILE" \
     --tool-schema configs/tool_schemas/b4_standard_v1.json \
     --model meta-llama/Llama-3.1-8B-Instruct \
-    --device auto \
+    --backend vllm \
+    --tensor-parallel 4 \
+    --batch-size 64 \
     --dtype bfloat16 \
     --temperature 0.3 \
     --output "$OUTPUT_DIR/dr_stage1.jsonl"
