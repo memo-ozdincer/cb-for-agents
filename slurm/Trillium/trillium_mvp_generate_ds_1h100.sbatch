@@ -66,7 +66,8 @@ export TRANSFORMERS_OFFLINE=1
 # Redirect XDG directories to writable scratch space (fixes vLLM and FlashInfer permission errors)
 export XDG_CACHE_HOME="$CACHE_ROOT/xdg_cache"
 export XDG_CONFIG_HOME="$CACHE_ROOT/xdg_config"
-mkdir -p "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME"
+export FLASHINFER_WORKSPACE_DIR="$CACHE_ROOT/flashinfer"
+mkdir -p "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$FLASHINFER_WORKSPACE_DIR"
 
 # Disable vLLM usage statistics (avoids writing to ~/.config/vllm)
 export VLLM_NO_USAGE_STATS=1
