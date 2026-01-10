@@ -212,13 +212,16 @@ echo "========================================"
 echo ""
 
 for MODEL in "${MODELS[@]}"; do
+    # Convert model name to cache directory name: meta-llama/Llama-3.1-8B-Instruct -> meta-llama--Llama-3.1-8B-Instruct
     MODEL_CACHE_NAME="${MODEL//\/\/--}"
     MODEL_PATH="$HF_HUB_CACHE/models--${MODEL_CACHE_NAME}"
     
     if [[ -d "$MODEL_PATH/snapshots" ]] && [[ -n "$(ls -A "$MODEL_PATH/snapshots" 2>/dev/null)" ]]; then
         echo "✅ $MODEL"
+    elif [[ -d "$MODEL_PATH" ]]; then
+        echo "⚠️  $MODEL (cached but no snapshots - may need re-download)"
     else
-        echo "❌ $MODEL (MISSING - download may have failed)"
+        echo "❌ $MODEL (MISSING - not downloaded)"
     fi
 done
 
