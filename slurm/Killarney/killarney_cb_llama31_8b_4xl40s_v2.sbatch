@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH -A aip-rgrosse
 #SBATCH -D /project/6105522/memoozd/harmful-agents-meta-dataset
-#SBATCH --time=03:00:00
-#SBATCH --gres=gpu:h100:1
+#SBATCH --time=04:00:00
+#SBATCH --gres=gpu:l40s:4
 #SBATCH --cpus-per-task=32
-#SBATCH --mem=64GB
+#SBATCH --mem=128GB
 #SBATCH --job-name=cb_llama31_8b_v2
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
@@ -207,10 +207,10 @@ echo "========================================"
 # KEY FIXES:
 # --alpha-decay-multiplier 1.0  : Schedule completes at end of training
 # --total-steps 300             : More steps for convergence
-# --no-gradient-checkpointing   : Test if gradient flow is the issue
+# --gradient-checkpointing      : Reduce memory by recomputing activations
 #
-# If training succeeds with no-gradient-checkpointing, we know the issue
-# was gradient flow. If it still fails, the issue is purely data quality.
+# With 4x L40S (48GB each), we have ~192GB total VRAM
+# DDP splits model across processes, each gets ~45GB headroom
 
 accelerate launch \
   --num_processes=4 \
@@ -224,7 +224,6 @@ accelerate launch \
   --batch-size 1 \
   --max-seq-length 512 \
   --gradient-accumulation-steps 16 \
-  --no-gradient-checkpointing \
   --output-dir "$RUN_DIR/outputs/cb_llama31_8b_instruct_v2"
 
 echo "========================================"
