@@ -1,8 +1,8 @@
 #!/bin/bash
-#SBATCH --job-name=mvp_ds_1h100
+#SBATCH --job-name=mvp_ds_4h100
 #SBATCH --nodes=1
-#SBATCH --gpus-per-node=1
-#SBATCH --time=08:00:00
+#SBATCH --gpus-per-node=4
+#SBATCH --time=0:20:00
 #SBATCH --output=/scratch/memoozd/logs/%x_%j.out
 #SBATCH --error=/scratch/memoozd/logs/%x_%j.err
 #SBATCH --account=def-zhijing
@@ -151,20 +151,20 @@ python scripts/cb_data_generation/generate_ds_mvp.py \
     --tool-schema configs/tool_schemas/b4_standard_v1.json \
     --model mlabonne/Meta-Llama-3.1-8B-Instruct-abliterated \
     --backend vllm \
-    --tensor-parallel 1 \
+    --tensor-parallel 4 \
     --batch-size 32 \
     --dtype bfloat16 \
     --temperature 0.7 \
     --min-yield 0.10 \
     --fail-on-low-yield \
-    --output "$OUTPUT_DIR/ds_stage1.jsonl" \
-    --output-ids "$OUTPUT_DIR/ds_stage1_ids.txt"
+    --output "$OUTPUT_DIR/ds_stage1_${SLURM_JOB_ID}.jsonl" \
+    --output-ids "$OUTPUT_DIR/ds_stage1_ids_${SLURM_JOB_ID}.txt"
 
 echo "========================================"
 echo "Ds generation complete!"
 echo "========================================"
-echo "Output: $OUTPUT_DIR/ds_stage1.jsonl"
-echo "Sample count: $(wc -l < "$OUTPUT_DIR/ds_stage1.jsonl" 2>/dev/null || echo 0)"
+echo "Output: $OUTPUT_DIR/ds_stage1_${SLURM_JOB_ID}.jsonl"
+echo "Sample count: $(wc -l < "$OUTPUT_DIR/ds_stage1_${SLURM_JOB_ID}.jsonl" 2>/dev/null || echo 0)"
 echo ""
 
 # IDs file is created automatically by --output-ids
