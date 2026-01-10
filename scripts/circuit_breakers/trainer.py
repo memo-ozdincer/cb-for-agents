@@ -1482,6 +1482,114 @@ class CircuitBreakerTrainer:
 
         return metrics
     
+    def _validate_completion_masking(self):
+        """
+        Validate that completion masking is correctly targeting tool tokens.
+        
+        This runs at training start to catch misconfigured masking early.
+        Checks:
+        1. Assistant header is found in samples
+        2. Completion mask covers <|python_tag|> tokens (not user prompt)
+        3. Reports statistics on masking success rate
+        """
+        self.accelerator.print("\n" + "=" * 60)
+        self.accelerator.print("VALIDATING COMPLETION MASKING")
+        self.accelerator.print("=" * 60)
+        
+        # Get first few batches for validation
+        num_to_check = min(3, len(self.dataset))
+        stats = {
+            "total_samples": 0,
+            "found_assistant_header": 0,
+            "mask_covers_python_tag": 0,
+            "fallback_to_full_seq": 0,
+        }
+        
+        for batch_idx in range(num_to_check):
+            batch = self.dataset[batch_idx]
+            
+            # Check harmful samples
+            harmful_ids = batch.get('harmful_input_ids')
+            harmful_mask = batch.get('harmful_loss_mask', batch.get('harmful_attention_mask'))
+            
+            if harmful_ids is not None:
+                batch_size = harmful_ids.shape[0] if len(harmful_ids.shape) > 1 else 1
+                if batch_size == 1 and len(harmful_ids.shape) == 1:
+                    harmful_ids = harmful_ids.unsqueeze(0)
+                    harmful_mask = harmful_mask.unsqueeze(0)
+                
+                for i in range(batch_size):
+                    stats["total_samples"] += 1
+                    
+                    # Decode to check format
+                    tokens = harmful_ids[i]
+                    text = self.tokenizer.decode(tokens, skip_special_tokens=False)
+                    
+                    # Check for Llama 3.1 assistant header
+                    if "<|start_header_id|>assistant<|end_header_id|>" in text:
+                        stats["found_assistant_header"] += 1
+                    else:
+                        self.accelerator.print(f"  ⚠ Sample {batch_idx}.{i}: No assistant header found")
+                    
+                    # Check if mask covers <|python_tag|>
+                    python_tag_id = self.tokenizer.convert_tokens_to_ids("<|python_tag|>")
+                    if python_tag_id is not None and python_tag_id != self.tokenizer.unk_token_id:
+                        # Find position of python_tag
+                        positions = (tokens == python_tag_id).nonzero(as_tuple=True)
+                        if len(positions[0]) > 0:
+                            pos = positions[0][0].item()
+                            if harmful_mask[i, pos] > 0:
+                                stats["mask_covers_python_tag"] += 1
+                            else:
+                                self.accelerator.print(
+                                    f"  ⚠ Sample {batch_idx}.{i}: <|python_tag|> at pos {pos} "
+                                    f"but mask[{pos}]={harmful_mask[i, pos].item()}"
+                                )
+                    
+                    # Check for fallback (mask == attention_mask)
+                    attn_mask = batch.get('harmful_attention_mask')
+                    if attn_mask is not None:
+                        if batch_size == 1 and len(attn_mask.shape) == 1:
+                            attn_mask = attn_mask.unsqueeze(0)
+                        if torch.equal(harmful_mask[i], attn_mask[i]):
+                            stats["fallback_to_full_seq"] += 1
+        
+        # Report results
+        total = stats["total_samples"]
+        if total > 0:
+            self.accelerator.print(f"\n  Checked {total} harmful samples from {num_to_check} batches:")
+            self.accelerator.print(
+                f"  - Assistant header found: {stats['found_assistant_header']}/{total} "
+                f"({100*stats['found_assistant_header']/total:.1f}%)"
+            )
+            self.accelerator.print(
+                f"  - Mask covers <|python_tag|>: {stats['mask_covers_python_tag']}/{total} "
+                f"({100*stats['mask_covers_python_tag']/total:.1f}%)"
+            )
+            self.accelerator.print(
+                f"  - Fallback to full sequence: {stats['fallback_to_full_seq']}/{total} "
+                f"({100*stats['fallback_to_full_seq']/total:.1f}%)"
+            )
+            
+            # Warn if too many fallbacks
+            if stats["fallback_to_full_seq"] > total * 0.5:
+                self.accelerator.print(
+                    "\n  ⚠️ WARNING: >50% samples using full-sequence masking!"
+                    "\n  This means completion masking is NOT working properly."
+                    "\n  Check that training data has <|start_header_id|>assistant<|end_header_id|> format."
+                )
+            
+            # Warn if python_tag not being masked
+            if stats["mask_covers_python_tag"] < stats["found_assistant_header"] * 0.9:
+                self.accelerator.print(
+                    "\n  ⚠️ WARNING: <|python_tag|> tokens not covered by loss mask!"
+                    "\n  Training will NOT learn to reroute tool calls."
+                )
+        else:
+            self.accelerator.print("  No samples to validate")
+        
+        self.accelerator.print("=" * 60 + "\n")
+
     def train(self):
         """Main training loop."""
         self.accelerator.print("=" * 60)
@@ -1491,6 +1599,11 @@ class CircuitBreakerTrainer:
         self.accelerator.print(f"  Alpha Max: {self.config.alpha_max}")
         self.accelerator.print(f"  CB Target Layers: {self.config.cb_target_layers}")
         self.accelerator.print("=" * 60)
+        
+        # =================================================================
+        # DEBUG: Validate completion masking at training start
+        # =================================================================
+        self._validate_completion_masking()
         
         progress_bar = tqdm(
             total=self.config.total_steps,

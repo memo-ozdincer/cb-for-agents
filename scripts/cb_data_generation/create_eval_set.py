@@ -94,6 +94,11 @@ def load_fujitsu_b4(
             if not combined_query or not expected_tool or not simulated_tool:
                 continue
             
+            # CRITICAL: Only include TRUE tool-flip attacks
+            # If expected == simulated, there's no flip to measure
+            if expected_tool == simulated_tool:
+                continue
+            
             records.append({
                 "id": record_id,
                 "source": "fujitsu_b4",
