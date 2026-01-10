@@ -29,17 +29,19 @@ VENV_DIR="$PROJECT_DIR/.venvs/cb_env"
 
 # Cache directories (same as in SLURM scripts)
 CACHE_ROOT="$SCRATCH_DIR/cb_cache"
-mkdir -p "$CACHE_ROOT"/{hf/hub,hf/datasets,hf/transformers,torch}
+mkdir -p "$CACHE_ROOT"/{hf/hub,hf/datasets,torch}
 
 export HF_HOME="$CACHE_ROOT/hf"
 export HF_HUB_CACHE="$CACHE_ROOT/hf/hub"
 export HF_DATASETS_CACHE="$CACHE_ROOT/hf/datasets"
-export TRANSFORMERS_CACHE="$CACHE_ROOT/hf/transformers"
 export TORCH_HOME="$CACHE_ROOT/torch"
+
+# DO NOT SET TRANSFORMERS_CACHE - it's deprecated and causes cache fragmentation
+# All files will go to HF_HOME/hub where offline mode expects them
 
 echo "Cache directories:"
 echo "  HF_HOME: $HF_HOME"
-echo "  TRANSFORMERS_CACHE: $TRANSFORMERS_CACHE"
+echo "  HF_HUB_CACHE: $HF_HUB_CACHE"
 echo ""
 
 # =============================================================================
@@ -87,55 +89,46 @@ MODELS=(
 )
 
 echo "========================================"
-echo "Downloading Models"
+echo "Downloading Models via snapshot_download"
 echo "========================================"
+echo "Using snapshot_download ensures proper Hub cache structure for offline mode"
+echo ""
 
 for MODEL in "${MODELS[@]}"; do
     echo ""
     echo "--- Downloading: $MODEL ---"
     
     python -c "
-from transformers import AutoModelForCausalLM, AutoTokenizer
-import torch
 import os
+from huggingface_hub import snapshot_download
 
 model_name = '$MODEL'
 hf_token = os.environ.get('HF_TOKEN')
+cache_dir = os.environ['HF_HUB_CACHE']
 
-print(f'Downloading tokenizer for {model_name}...')
+print(f'Downloading {model_name} to {cache_dir}...')
+print('(This may take a while for large models)')
 
-# Download tokenizer (with token for gated models like Llama)
-tokenizer = AutoTokenizer.from_pretrained(
-    model_name,
-    token=hf_token,
-    trust_remote_code=True,
-)
-print(f'  Tokenizer cached to: {tokenizer.name_or_path}')
-
-print(f'Downloading model weights for {model_name}...')
-print('  (This may take a while for large models)')
-
-# Download model - use low memory mode to avoid OOM on login node
-model = AutoModelForCausalLM.from_pretrained(
-    model_name,
-    torch_dtype=torch.bfloat16,
-    low_cpu_mem_usage=True,
-    trust_remote_code=True,
-    token=hf_token,
-)
-print(f'  Model cached successfully')
-
-# Clean up to free memory
-del model
-del tokenizer
-import gc
-gc.collect()
+# Download using snapshot_download - this creates the exact cache structure
+# that offline mode expects (models--org--name/snapshots/hash/...)
+try:
+    local_path = snapshot_download(
+        repo_id=model_name,
+        cache_dir=cache_dir,
+        token=hf_token,
+        resume_download=True,
+    )
+    print(f'✅ Model cached successfully to: {local_path}')
+except Exception as e:
+    print(f'❌ Failed to download: {e}')
+    exit(1)
 "
     
     if [[ $? -eq 0 ]]; then
         echo "✅ $MODEL downloaded successfully"
     else
         echo "❌ Failed to download $MODEL"
+        exit 1
     fi
 done
 
@@ -226,6 +219,9 @@ echo "  sbatch slurm/Trillium/trillium_mvp_generate_ds.sbatch"
 echo ""
 echo "Note: Make sure your SLURM scripts set these env vars:"
 echo "  export HF_HOME=$HF_HOME"
-echo "  export TRANSFORMERS_CACHE=$TRANSFORMERS_CACHE"
-echo "  export HF_HUB_OFFLINE=1  # Optional: fail fast if model not cached"
+echo "  export HF_HUB_CACHE=$HF_HUB_CACHE"
+echo "  export HF_HUB_OFFLINE=1"
+echo "  export TRANSFORMERS_OFFLINE=1"
+echo ""
+echo "DO NOT SET TRANSFORMERS_CACHE (deprecated - causes cache fragmentation)"
 echo ""

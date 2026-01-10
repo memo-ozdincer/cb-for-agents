@@ -44,7 +44,12 @@ module load python/3.11.5
 
 source "$VENV_DIR/bin/activate"
 
+# Note: Eval set creation is CPU-only, but we still set cache vars for consistency
+CACHE_ROOT="$SCRATCH_DIR/cb_cache"
+export HF_HOME="$CACHE_ROOT/hf"
+
 echo "Python: $(python -V)"
+echo ""
 
 # =============================================================================
 # Job Info

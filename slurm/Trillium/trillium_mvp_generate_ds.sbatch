@@ -42,30 +42,45 @@ if [[ ! -d "$VENV_DIR" ]]; then
   echo "ERROR: venv not found at $VENV_DIR"
   exit 1
 fi
-export CACHE_ROOT=/scratch/memoozd/cb_cache
-export HF_HOME="$CACHE_ROOT/hf"
 
-# Point hub cache to the directory that actually contains the downloaded files:
-export HF_HUB_CACHE="$HF_HOME/transformers"
-export TRANSFORMERS_CACHE="$HF_HOME/transformers"
-
-export HF_HUB_OFFLINE=1
-export TRANSFORMERS_OFFLINE=1
-mkdir -p "$HF_HUB_CACHE"
-
-export HF_HUB_OFFLINE=1 # Optional: fail fast if model not cached
 source "$VENV_DIR/bin/activate"
 
-echo "Python: $(python -V)"
-echo "Which:  $(which python)"
-echo "HF_HOME=$HF_HOME"
-echo "HF_HUB_CACHE=$HF_HUB_CACHE"
-echo "TRANSFORMERS_CACHE=$TRANSFORMERS_CACHE"
-ls -ld "$HF_HUB_CACHE" || true
-ls -1 "$HF_HUB_CACHE" | head || true
+# =============================================================================
+# Cache Setup (MUST match prefetch_models.sh)
+# =============================================================================
+CACHE_ROOT="$SCRATCH_DIR/cb_cache"
+mkdir -p "$CACHE_ROOT"/{hf/hub,hf/datasets,torch}
+
+export HF_HOME="$CACHE_ROOT/hf"
+export HF_HUB_CACHE="$CACHE_ROOT/hf/hub"
+export HF_DATASETS_CACHE="$CACHE_ROOT/hf/datasets"
+export TORCH_HOME="$CACHE_ROOT/torch"
+
+# Enable offline mode - fail fast if model not cached
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+
+# DO NOT SET TRANSFORMERS_CACHE - deprecated and causes cache fragmentation
 
 # =============================================================================
-# Preflight
+# Environment Info
+# =============================================================================
+echo "Python: $(python -V)"
+echo "Which:  $(which python)"
+echo ""
+echo "Cache Configuration:"
+echo "  HF_HOME: $HF_HOME"
+echo "  HF_HUB_CACHE: $HF_HUB_CACHE"
+echo "  HF_HUB_OFFLINE: $HF_HUB_OFFLINE"
+echo ""
+
+# Quick cache check
+echo "Hub cache contents:"
+ls -1d "$HF_HUB_CACHE"/models--* 2>/dev/null | head -5 || echo "  (no models cached yet - run prefetch_models.sh first!)"
+echo ""
+
+# =============================================================================
+# Preflight GPU Check
 # =============================================================================
 python - << 'PY'
 import sys
@@ -75,20 +90,16 @@ print("CUDA available:", torch.cuda.is_available())
 print("GPU count:", torch.cuda.device_count())
 if torch.cuda.is_available():
     print(f"GPU 0: {torch.cuda.get_device_name(0)}")
+else:
+    print("ERROR: No GPU available!")
+    sys.exit(1)
 PY
 
-# =============================================================================
-# Cache Setup
-# =============================================================================
-CACHE_ROOT="$SCRATCH_DIR/cb_cache"
-mkdir -p "$CACHE_ROOT"/{hf,torch}
-export HF_HOME="$CACHE_ROOT/hf"
-export HF_HUB_CACHE="$CACHE_ROOT/hf/hub"  # Explicit hub cache location
-export HF_DATASETS_CACHE="$CACHE_ROOT/hf/datasets"
-export TRANSFORMERS_CACHE="$CACHE_ROOT/hf/transformers"
-export TORCH_HOME="$CACHE_ROOT/torch"
-export HF_HUB_OFFLINE=1  # Fail fast if model not cached (no internet on compute nodes)
-export TRANSFORMERS_OFFLINE=1  # Disable all network calls in transformers
+if [[ $? -ne 0 ]]; then
+    echo "ERROR: GPU check failed"
+    exit 1
+fi
+echo ""
 
 # =============================================================================
 # Job Info

@@ -47,21 +47,34 @@ fi
 
 source "$VENV_DIR/bin/activate"
 
-echo "Python: $(python -V)"
-echo "Which:  $(which python)"
-
 # =============================================================================
-# Cache Setup
+# Cache Setup (MUST match prefetch_models.sh)
 # =============================================================================
 CACHE_ROOT="$SCRATCH_DIR/cb_cache"
-mkdir -p "$CACHE_ROOT"/{hf,torch}
+mkdir -p "$CACHE_ROOT"/{hf/hub,hf/datasets,torch}
+
 export HF_HOME="$CACHE_ROOT/hf"
-export HF_HUB_CACHE="$CACHE_ROOT/hf/hub"  # Explicit hub cache location
+export HF_HUB_CACHE="$CACHE_ROOT/hf/hub"
 export HF_DATASETS_CACHE="$CACHE_ROOT/hf/datasets"
-export TRANSFORMERS_CACHE="$CACHE_ROOT/hf/transformers"
 export TORCH_HOME="$CACHE_ROOT/torch"
-export HF_HUB_OFFLINE=1  # Fail fast if model not cached (no internet on compute nodes)
-export TRANSFORMERS_OFFLINE=1  # Disable all network calls in transformers
+
+# Enable offline mode - fail fast if model not cached
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+
+# DO NOT SET TRANSFORMERS_CACHE - deprecated and causes cache fragmentation
+
+# =============================================================================
+# Environment Info
+# =============================================================================
+echo "Python: $(python -V)"
+echo "Which:  $(which python)"
+echo ""
+echo "Cache Configuration:"
+echo "  HF_HOME: $HF_HOME"
+echo "  HF_HUB_CACHE: $HF_HUB_CACHE"
+echo "  HF_HUB_OFFLINE: $HF_HUB_OFFLINE"
+echo ""
 
 # =============================================================================
 # Job Info
