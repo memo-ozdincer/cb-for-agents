@@ -16,3 +16,14 @@ data/circuit_breakers/_backups/
 **/__pycache__/
 *.pyc
 data/circuit_breakers/_backups/
+CB_FIX_PLAN.md
+CB_DATA_GUIDE.md
+DATA.md
+RLVR.md
+CIRCUIT_BREAKERS.md
+EVALUATION_GUIDE.md
+IMPLEMENTATION-GUIDE.md
+README_PIPELINE.md
+VR_GUIDE.md
+RL_TRAINING_GUIDE.md
+DATA_FLOW_GUIDE.md
