@@ -54,7 +54,9 @@ CACHE_ROOT="$SCRATCH_DIR/cb_cache"
 mkdir -p "$CACHE_ROOT"/{hf,torch}
 export HF_HOME="$CACHE_ROOT/hf"
 export HF_DATASETS_CACHE="$CACHE_ROOT/hf/datasets"
+export TRANSFORMERS_CACHE="$CACHE_ROOT/hf/transformers"
 export TORCH_HOME="$CACHE_ROOT/torch"
+export HF_HUB_OFFLINE=1  # Fail fast if model not cached (no internet on compute nodes)
 
 # =============================================================================
 # Job Info
