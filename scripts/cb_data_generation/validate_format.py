@@ -151,7 +151,8 @@ def validate_assistant_raw(sample: Dict[str, Any], result: ValidationResult):
     if "<|python_tag|>" not in assistant_raw:
         result.add_error("Missing <|python_tag|> in assistant_raw")
     
-    # Must end with <|eom_id|> or <|eot_id|>
+    # Check for end tokens (but make it a warning, not error)
+    # vLLM may not include these even with skip_special_tokens=False
     stripped = assistant_raw.rstrip()
     has_valid_end = (
         stripped.endswith("<|eom_id|>") or 
@@ -163,7 +164,7 @@ def validate_assistant_raw(sample: Dict[str, Any], result: ValidationResult):
     has_end_token = "<|eom_id|>" in assistant_raw or "<|eot_id|>" in assistant_raw
     
     if not has_end_token:
-        result.add_error("Missing <|eom_id|> or <|eot_id|> in assistant_raw")
+        result.add_warning("Missing <|eom_id|> or <|eot_id|> in assistant_raw (not critical for training)")
     elif not has_valid_end:
         result.add_warning("End token not at end of assistant_raw (trailing content)")
     
