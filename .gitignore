@@ -5,4 +5,14 @@ agentic-rag-redteam-bench/
 CB_TODO.md
 Implementation-Guide.md
 related_repos/
-unsloth/
+unsloth/logs/*.out
+logs/*.err
+**/__pycache__/
+*.pyc
+data/circuit_breakers/_backups/
+**/__pycache__/
+*.pyc
+data/circuit_breakers/_backups/
+**/__pycache__/
+*.pyc
+data/circuit_breakers/_backups/
