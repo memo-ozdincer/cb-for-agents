@@ -2,7 +2,7 @@
 #SBATCH --job-name=mvp_ds_1h100
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=1
-#SBATCH --time=06:00:00
+#SBATCH --time=08:00:00
 #SBATCH --output=/scratch/memoozd/logs/%x_%j.out
 #SBATCH --error=/scratch/memoozd/logs/%x_%j.err
 #SBATCH --account=def-zhijing
