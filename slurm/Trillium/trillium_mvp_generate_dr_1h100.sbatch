@@ -65,6 +65,11 @@ export TORCH_HOME="$CACHE_ROOT/torch"
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 
+# vLLM cache directories (avoid permission denied on /home)
+export VLLM_USAGE_STATS_DIR="$CACHE_ROOT/vllm"
+export FLASHINFER_WORKSPACE_DIR="$CACHE_ROOT/flashinfer"
+mkdir -p "$VLLM_USAGE_STATS_DIR" "$FLASHINFER_WORKSPACE_DIR"
+
 # DO NOT SET TRANSFORMERS_CACHE - deprecated and causes cache fragmentation
 
 # =============================================================================
