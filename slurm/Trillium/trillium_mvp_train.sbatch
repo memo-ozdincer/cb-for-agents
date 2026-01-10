@@ -2,7 +2,7 @@
 #SBATCH --job-name=mvp_train
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=1
-#SBATCH --time=04:00:00
+#SBATCH --time=06:00:00
 #SBATCH --output=/scratch/memoozd/logs/%x_%j.out
 #SBATCH --error=/scratch/memoozd/logs/%x_%j.err
 #SBATCH --account=def-zhijing
@@ -214,21 +214,27 @@ torch.cuda.empty_cache()
 echo ""
 echo "Starting Circuit Breaker training..."
 
+# STAGE 1 FIX: Improved hyperparameters
+# - alpha-max 10.0: Paper default, stronger rerouting push (was 1.0)
+# - cb-target-layers 10 20: Sparse mid-layer targeting is more effective (was 16-23)
+# - preset llama-3.1-8b-instruct: Match the actual model
+# - total-steps 500: More training with low baseline ASR
+
 python scripts/train_circuit_breaker.py \
-    --preset llama-3-8b \
+    --preset llama-3.1-8b-instruct \
     --base-model "$BASE_MODEL" \
     --data-path "$COMBINED_FILE" \
     --output-dir "$OUTPUT_DIR" \
     --loss-weighting dual \
-    --alpha-max 1.0 \
-    --alpha-decay-multiplier 1.0 \
-    --total-steps 300 \
+    --alpha-max 10.0 \
+    --alpha-decay-multiplier 2.0 \
+    --total-steps 500 \
     --batch-size 4 \
     --gradient-accumulation-steps 4 \
-    --learning-rate 2e-5 \
+    --learning-rate 5e-5 \
     --lora-r 16 \
     --lora-alpha 32 \
-    --cb-target-layers 16 17 18 19 20 21 22 23 \
+    --cb-target-layers 10 20 \
     --wandb-project "circuit-breakers-mvp" \
     --wandb-run-name "cb_mvp_stage1_${SLURM_JOB_ID}"
 
@@ -240,8 +246,9 @@ echo "Running post-training sanity check..."
 
 python scripts/circuit_breakers/sanity_check.py \
     --base-model "$BASE_MODEL" \
-    --adapter-model "$OUTPUT_DIR" \
-    --epsilon 1e-4
+    --adapter-path "$OUTPUT_DIR/final" \
+    --epsilon 1e-4 \
+    --fail-on-error
 
 # =============================================================================
 # Create symlink to latest run

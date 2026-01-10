@@ -187,6 +187,8 @@ if 'delta' in results:
     print(f'  Tool-Flip ASR: {results[\"delta\"][\"tool_flip_asr\"]:+.2%}')
     print(f'  Forced Call ASR: {results[\"delta\"][\"forced_call_asr\"]:+.2%}')
     print(f'  Capability Retention: {results[\"delta\"][\"capability_retention\"]:+.2%}')
+    if 'asr_relative_reduction' in results['delta']:
+        print(f'  ASR Relative Reduction: {results[\"delta\"][\"asr_relative_reduction\"]:.2%}')
     print()
 
 if 'stage1_gates' in results:
