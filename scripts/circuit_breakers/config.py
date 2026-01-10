@@ -58,9 +58,9 @@ class CircuitBreakerConfig:
     alpha_decay_strategy: str = "linear" # "linear" or "cosine"
 
     # Alpha decay horizon as a multiple of total_steps.
-    # Default 2.0 matches the current implementation/documentation.
-    # If you want alpha to reach 0 by the end of training, set this to 1.0.
-    alpha_decay_multiplier: float = 2.0
+    # STAGE 1 FIX: Changed from 2.0 to 1.0 so alpha reaches 0 by end of training.
+    # This matches the reference implementation's behavior.
+    alpha_decay_multiplier: float = 1.0
 
     # How to extract representations for the RR/retain losses.
     # - "hidden_states": use Transformers' output_hidden_states=True (preferred; robust)
@@ -71,7 +71,9 @@ class CircuitBreakerConfig:
     # Loss weighting strategy:
     # - "single_alpha": L = alpha * L_rr + L_ret (original, retain weight fixed at 1.0)
     # - "dual": L = cs(t) * L_rr + cr(t) * L_ret (paper-style, both coefficients vary)
-    loss_weighting: str = "single_alpha"
+    # STAGE 1 FIX: Changed from "single_alpha" to "dual" to match reference implementation.
+    # Dual coefficients: cs(t) starts high and decays, cr(t) starts low and increases.
+    loss_weighting: str = "dual"
 
     # Completion-based training:
     # - If True, loss is computed only on assistant completion tokens

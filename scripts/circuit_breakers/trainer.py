@@ -171,7 +171,8 @@ def reroute_loss(
     target_layers: List[int],
     attention_mask: Optional[torch.Tensor] = None,
     loss_mask: Optional[torch.Tensor] = None,
-) -> torch.Tensor:
+    return_metrics: bool = False,
+) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, float]]]:
     """
     Rerouting Loss (L_rr): Push harmful representations to be orthogonal.
 
@@ -184,19 +185,29 @@ def reroute_loss(
     (e.g., assistant completion tokens, tool call arguments) rather than the
     full sequence. This is critical for completion-based training.
 
+    STAGE 1 FIX: Now returns explicit metrics about what cos_sim is computed
+    against (model vs frozen baseline) for debugging reroute effectiveness.
+
     Args:
         model_reps: Hidden states from trainable model {layer_idx: tensor}
-        frozen_reps: Hidden states from frozen reference model
+        frozen_reps: Hidden states from frozen reference model (BASELINE)
         target_layers: Which layers to compute loss on
         attention_mask: Optional mask to ignore padding tokens
         loss_mask: Optional mask for targeted loss (e.g., completion tokens only)
             If provided, loss is computed only on tokens where loss_mask=1
+        return_metrics: If True, return (loss, metrics_dict) for logging
 
     Returns:
-        Scalar loss tensor
+        Scalar loss tensor, or (loss, metrics) if return_metrics=True
+        
+    Metrics dict contains:
+        - cos_sim_mean: Mean cosine similarity BEFORE ReLU (should decrease during training)
+        - cos_sim_positive_frac: Fraction of tokens with positive cos_sim
+        - target_type: Always "frozen_baseline" to clarify what we're comparing to
     """
     total_loss = 0.0
     num_layers = 0
+    all_cos_sims = []
 
     # Combine attention_mask and loss_mask
     combined_mask = attention_mask
@@ -221,6 +232,14 @@ def reroute_loss(
         # Cosine similarity per token
         cos_sim = (h_model_norm * h_frozen_norm).sum(dim=-1)  # (batch, seq_len)
 
+        # Store raw cos_sim for metrics
+        if return_metrics:
+            if combined_mask is not None:
+                masked_cos_sim = cos_sim[combined_mask.bool()]
+            else:
+                masked_cos_sim = cos_sim.flatten()
+            all_cos_sims.append(masked_cos_sim.detach())
+
         # Apply ReLU: only penalize positive similarity
         relu_cos = F.relu(cos_sim)
 
@@ -235,7 +254,27 @@ def reroute_loss(
         total_loss += loss
         num_layers += 1
 
-    return total_loss / max(num_layers, 1)
+    final_loss = total_loss / max(num_layers, 1)
+
+    if return_metrics:
+        if all_cos_sims:
+            all_cos_sims = torch.cat(all_cos_sims)
+            metrics = {
+                "cos_sim_mean": all_cos_sims.mean().item(),
+                "cos_sim_std": all_cos_sims.std().item(),
+                "cos_sim_positive_frac": (all_cos_sims > 0).float().mean().item(),
+                "target_type": "frozen_baseline",  # EXPLICIT: we compare to frozen baseline
+            }
+        else:
+            metrics = {
+                "cos_sim_mean": 0.0,
+                "cos_sim_std": 0.0,
+                "cos_sim_positive_frac": 0.0,
+                "target_type": "frozen_baseline",
+            }
+        return final_loss, metrics
+    
+    return final_loss
 
 
 def retain_loss(
@@ -1282,12 +1321,14 @@ class CircuitBreakerTrainer:
             del frozen_outputs
 
         # Compute rerouting loss with optional loss mask
-        loss_reroute = reroute_loss(
+        # STAGE 1 FIX: return_metrics=True for explicit logging of what we're comparing to
+        loss_reroute, reroute_metrics = reroute_loss(
             harmful_model_reps,
             harmful_frozen_reps,
             self.config.cb_target_layers,
             harmful_attention_mask,
             loss_mask=harmful_loss_mask,
+            return_metrics=True,
         )
 
         # === Process Benign Samples (Retain) ===
@@ -1386,6 +1427,16 @@ class CircuitBreakerTrainer:
             metrics['cs'] = cs
             metrics['cr'] = cr
 
+        # STAGE 1 FIX: Add explicit reroute metrics for debugging
+        # These show what the cosine similarity is computed against
+        metrics['reroute_cos_sim_mean'] = reroute_metrics['cos_sim_mean']
+        metrics['reroute_cos_sim_positive_frac'] = reroute_metrics['cos_sim_positive_frac']
+        # Note: target_type should always be "frozen_baseline" - if not, there's a bug
+        if reroute_metrics.get('target_type') != 'frozen_baseline':
+            self.accelerator.print(
+                f"  WARNING: Unexpected reroute target type: {reroute_metrics.get('target_type')}"
+            )
+
         # Gradient diagnostics (every 50 steps on main process)
         if self.global_step % 50 == 1 and self.accelerator.is_main_process:
             grad_stats = self._compute_gradient_stats()
@@ -1395,6 +1446,12 @@ class CircuitBreakerTrainer:
                     f"  WARNING: Very small gradients detected! "
                     f"grad_norm={grad_stats.get('grad_norm_total', 0):.2e}"
                 )
+            # STAGE 1 FIX: Log explicit reroute info periodically
+            self.accelerator.print(
+                f"  Reroute metrics: cos_sim_mean={reroute_metrics['cos_sim_mean']:.4f}, "
+                f"positive_frac={reroute_metrics['cos_sim_positive_frac']:.2%}, "
+                f"target={reroute_metrics['target_type']}"
+            )
 
         return metrics
     
