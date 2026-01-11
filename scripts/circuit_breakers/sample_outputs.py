@@ -12,6 +12,7 @@ Usage:
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -21,18 +22,51 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
 
 
+def resolve_local_model_path(model_id: str) -> str:
+    """
+    Resolve a HuggingFace model ID to its local cache path.
+    Required in offline mode to avoid API calls during tokenizer loading.
+    """
+    from huggingface_hub import snapshot_download
+    
+    # If it's already a local path, return as-is
+    if os.path.isdir(model_id):
+        return model_id
+    
+    # Use snapshot_download with local_files_only=True to get cached path
+    try:
+        local_path = snapshot_download(
+            repo_id=model_id,
+            local_files_only=True,
+        )
+        print(f"Resolved {model_id} -> {local_path}")
+        return local_path
+    except Exception as e:
+        print(f"Warning: Could not resolve local path for {model_id}: {e}")
+        return model_id
+
+
 def load_model_and_tokenizer(
     model_path: str,
     adapter_path: Optional[str] = None,
     device: str = "cuda",
 ):
     """Load model with optional adapter."""
+    # In offline mode, resolve Hub ID to local cache path to avoid API calls
+    offline_mode = os.environ.get("HF_HUB_OFFLINE", "0") == "1"
+    if offline_mode:
+        model_path = resolve_local_model_path(model_path)
+    
     print(f"Loading model from {model_path}...")
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_path,
+        local_files_only=offline_mode,
+    )
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
         torch_dtype=torch.bfloat16,
         device_map=device,
+        local_files_only=offline_mode,
     )
     
     if adapter_path:

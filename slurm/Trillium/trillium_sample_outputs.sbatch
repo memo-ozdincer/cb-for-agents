@@ -38,6 +38,9 @@ source "$VENV_DIR/bin/activate"
 CACHE_ROOT="$SCRATCH_DIR/cb_cache"
 mkdir -p "$CACHE_ROOT"/{hf/hub,hf/datasets,torch}
 
+# CRITICAL: Set HOME to SCRATCH for vLLM/transformers bug workaround
+export HOME="$SCRATCH_DIR"
+
 export HF_HOME="$CACHE_ROOT/hf"
 export HF_HUB_CACHE="$CACHE_ROOT/hf/hub"
 export HF_DATASETS_CACHE="$CACHE_ROOT/hf/datasets"
@@ -52,6 +55,13 @@ export XDG_CACHE_HOME="$CACHE_ROOT/xdg_cache"
 export XDG_CONFIG_HOME="$CACHE_ROOT/xdg_config"
 export FLASHINFER_WORKSPACE_DIR="$CACHE_ROOT/flashinfer"
 mkdir -p "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$FLASHINFER_WORKSPACE_DIR"
+
+# Disable vLLM usage statistics (avoids writing to ~/.config/vllm)
+export VLLM_NO_USAGE_STATS=1
+export DO_NOT_TRACK=1
+
+# Force vLLM to use flash_attn backend instead of flashinfer
+export VLLM_ATTENTION_BACKEND=FLASH_ATTN
 
 PROJECT_DIR="/project/def-zhijing/memoozd/harmful-agents-meta-dataset"
 SCRATCH_DIR="/scratch/memoozd"
