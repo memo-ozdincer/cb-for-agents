@@ -15,13 +15,12 @@
 # =============================================================================
 
 set -euo pipefail
-
 # =============================================================================
 # CRITICAL: Set HOME to SCRATCH *BEFORE* anything else
 # This is required to work around a vLLM bug. DO NOT MOVE THIS.
 # =============================================================================
 export HOME="/scratch/memoozd"
-
+# =============================================================================
 PROJECT_DIR="/project/def-zhijing/memoozd"
 SCRATCH_DIR="/scratch/memoozd"
 REPO_DIR="$PROJECT_DIR/harmful-agents-meta-dataset"
@@ -36,14 +35,35 @@ module load python/3.11.5
 
 source "$VENV_DIR/bin/activate"
 
-# Cache setup (HOME already set above)
+# =============================================================================
+# Cache Setup (MUST match prefetch_models.sh and trillium_mvp_generate_ds_1h100.sbatch)
+# =============================================================================
 CACHE_ROOT="$SCRATCH_DIR/cb_cache"
+mkdir -p "$CACHE_ROOT"/{hf/hub,hf/datasets,torch}
 export HF_HOME="$CACHE_ROOT/hf"
 export HF_HUB_CACHE="$CACHE_ROOT/hf/hub"
+export HF_DATASETS_CACHE="$CACHE_ROOT/hf/datasets"
+export TORCH_HOME="$CACHE_ROOT/torch"
+
+# Enable offline mode - fail fast if model not cached
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 
-# vLLM settings
+# Redirect XDG directories to writable scratch space (fixes vLLM and FlashInfer permission errors)
+export XDG_CACHE_HOME="$CACHE_ROOT/xdg_cache"
+export XDG_CONFIG_HOME="$CACHE_ROOT/xdg_config"
+export FLASHINFER_WORKSPACE_DIR="$CACHE_ROOT/flashinfer"
+mkdir -p "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$FLASHINFER_WORKSPACE_DIR"
+
+# Disable vLLM usage statistics (avoids writing to ~/.config/vllm)
+export VLLM_NO_USAGE_STATS=1
+export DO_NOT_TRACK=1
+
+# Force vLLM to use flash_attn backend instead of flashinfer
+# (flashinfer has hardcoded ~/.cache paths that ignore env vars in subprocesses)
+export VLLM_ATTENTION_BACKEND=FLASH_ATTN
+
+# vLLM multiprocessing settings for tensor parallelism
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
 
 echo "========================================"
@@ -51,6 +71,13 @@ echo "CB Eval with vLLM (4xH100 Tensor Parallel)"
 echo "========================================"
 echo "HOME=$HOME"
 echo "HF_HOME=$HF_HOME"
+echo "HF_HUB_CACHE=$HF_HUB_CACHE"
+echo ""
+
+# Quick cache check
+echo "Hub cache contents:"
+ls -1d "$HF_HUB_CACHE"/models--* 2>/dev/null | head -5 || echo "  (no models cached!)"
+echo ""
 
 BASE_MODEL="meta-llama/Llama-3.1-8B-Instruct"
 LATEST_RUN=$(ls -td $SCRATCH_DIR/cb_runs/*/ 2>/dev/null | head -1)

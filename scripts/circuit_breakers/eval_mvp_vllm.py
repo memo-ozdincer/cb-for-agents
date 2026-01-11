@@ -62,6 +62,32 @@ def resolve_hf_token() -> Optional[str]:
     )
 
 
+def resolve_local_model_path(model_id: str, hf_token: Optional[str] = None) -> str:
+    """
+    Resolve a HuggingFace model ID to its local cache path using snapshot_download.
+    
+    When in offline mode, we need to pass the actual local path instead of
+    a Hub model ID to avoid API calls during model_info() checks.
+    """
+    from huggingface_hub import snapshot_download
+    
+    # If it's already a local path, return as-is
+    if os.path.isdir(model_id):
+        return model_id
+    
+    # Use snapshot_download with local_files_only=True to get cached path
+    try:
+        local_path = snapshot_download(
+            repo_id=model_id,
+            local_files_only=True,
+            token=hf_token,
+        )
+        return local_path
+    except Exception as e:
+        logger.warning(f"Could not resolve local path for {model_id}: {e}")
+        return model_id
+
+
 # =============================================================================
 # vLLM Model Loading
 # =============================================================================
@@ -89,13 +115,22 @@ def load_vllm_model(
     from vllm import LLM
     from vllm.lora.request import LoRARequest
     
+    hf_token = resolve_hf_token()
+    
+    # Check if we're in offline mode
+    offline_mode = os.environ.get("HF_HUB_OFFLINE", "0") == "1"
+    
+    # In offline mode, resolve Hub ID to local cache path to avoid API calls
+    if offline_mode:
+        resolved_path = resolve_local_model_path(model_path, hf_token)
+        if resolved_path != model_path:
+            logger.info(f"vLLM: Resolved {model_path} -> {resolved_path}")
+        model_path = resolved_path
+    
     logger.info(f"Loading model with vLLM: {model_path}")
     logger.info(f"  Tensor parallel size: {tensor_parallel_size}")
     if adapter_path:
         logger.info(f"  LoRA adapter: {adapter_path}")
-    
-    # Check if we're in offline mode
-    offline_mode = os.environ.get("HF_HUB_OFFLINE", "0") == "1"
     if offline_mode:
         logger.info("  (offline mode - using cached files only)")
     
@@ -131,6 +166,14 @@ def load_tokenizer(model_path: str):
     
     hf_token = resolve_hf_token()
     offline_mode = os.environ.get("HF_HUB_OFFLINE", "0") == "1"
+    
+    # In offline mode, resolve Hub ID to local cache path to avoid API calls
+    # (transformers has a Mistral check that calls model_info() even with local_files_only)
+    if offline_mode:
+        resolved_path = resolve_local_model_path(model_path, hf_token)
+        if resolved_path != model_path:
+            logger.info(f"Tokenizer: Resolved {model_path} -> {resolved_path}")
+        model_path = resolved_path
     
     tokenizer = AutoTokenizer.from_pretrained(
         model_path,
