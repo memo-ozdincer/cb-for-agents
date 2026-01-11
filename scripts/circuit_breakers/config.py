@@ -158,6 +158,68 @@ class CircuitBreakerConfigLlama3_1_8B_Instruct(CircuitBreakerConfig):
 
 
 @dataclass
+class CircuitBreakerConfigLlama3_1_8B_Stage2(CircuitBreakerConfig):
+    """
+    STAGE 2 Configuration for meta-llama/Llama-3.1-8B-Instruct.
+    
+    Key changes from Stage 1:
+    - alpha_max: 0.5 (was 10.0) - Prevents representation collapse
+    - cb_target_layers: [15] (single layer) - Focus on one representation layer
+    - max_grad_norm: 0.5 (was 1.0) - Additional stability
+    - rr_weight / retain_weight: Asymmetric weighting (0.7 / 1.3)
+    - Dr:Ds ratio: 5:1 (was 1:1) - More retain samples to preserve capability
+    
+    CRITICAL LESSONS FROM STAGE 1:
+    - RR loss is VERY aggressive; alpha=10.0 caused complete model collapse
+    - Baseline already resists 95% of attacks, so gentle nudging is sufficient
+    - Adversarial-safe samples (where model resists injection) are critical for Dr
+    """
+    base_model: str = "meta-llama/Llama-3.1-8B-Instruct"
+
+    # Single mid-layer target (layer 15 of 32)
+    cb_target_layers: List[int] = field(default_factory=lambda: [15])
+
+    lora: LoRAConfig = field(default_factory=lambda: LoRAConfig(
+        r=16,
+        alpha=32,
+        dropout=0.05,
+        target_modules=[
+            "q_proj", "k_proj", "v_proj", "o_proj",
+            "gate_proj", "up_proj", "down_proj"
+        ],
+        target_layers=list(range(0, 21))
+    ))
+
+    # CRITICAL: Much lower alpha to prevent collapse
+    alpha_max: float = 0.5  # Was 10.0 in Stage 1
+    
+    # Additional training stability
+    max_grad_norm: float = 0.5  # Was 1.0 in Stage 1
+    
+    total_steps: int = 150
+    learning_rate: float = 5e-5
+    
+    # Use dual loss weighting (paper style)
+    loss_weighting: str = "dual"
+    
+    # Stage 2 specific: asymmetric loss weights
+    # These are applied within the loss function
+    rr_weight: float = 0.7      # Weight for RR (rerouting) loss
+    retain_weight: float = 1.3  # Weight for retain loss
+    
+    # Extra weight for adversarial-safe samples (model resisted injection)
+    # These are critical for preventing capability loss
+    retain_weight_adversarial_safe: float = 2.0
+    
+    # Data path for Stage 2 (merged with 5:1 Dr:Ds ratio)
+    data_path: str = "data/circuit_breakers/stage2_training.jsonl"
+    
+    # Logging
+    wandb_run_name: Optional[str] = "cb-llama3.1-8b-stage2"
+    wandb_notes: Optional[str] = "Stage 2: Reduced alpha, expanded Dr, asymmetric weighting"
+
+
+@dataclass
 class CircuitBreakerConfigMistral_7B(CircuitBreakerConfig):
     """Preset configuration for Mistral-7B-Instruct."""
     base_model: str = "mistralai/Mistral-7B-Instruct-v0.3"
@@ -215,6 +277,7 @@ CONFIG_PRESETS = {
     "llama-4-scout": CircuitBreakerConfigLlama4Scout,
     "llama-3-8b": CircuitBreakerConfigLlama3_8B,
     "llama-3.1-8b-instruct": CircuitBreakerConfigLlama3_1_8B_Instruct,
+    "llama-3.1-8b-stage2": CircuitBreakerConfigLlama3_1_8B_Stage2,  # Stage 2 with reduced alpha
     "mistral-7b": CircuitBreakerConfigMistral_7B,
     "default": CircuitBreakerConfig,
 }
