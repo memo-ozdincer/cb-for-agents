@@ -80,12 +80,20 @@ def load_model_and_tokenizer(
 def generate_response(model, tokenizer, messages, tools, max_new_tokens=256):
     """Generate a response for the given messages."""
     # Format with chat template
-    text = tokenizer.apply_chat_template(
-        messages,
-        tools=tools,
-        add_generation_prompt=True,
-        tokenize=False,
-    )
+    # If tools is empty or None, don't pass tools arg
+    if tools:
+        text = tokenizer.apply_chat_template(
+            messages,
+            tools=tools,
+            add_generation_prompt=True,
+            tokenize=False,
+        )
+    else:
+        text = tokenizer.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            tokenize=False,
+        )
     
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
     
@@ -134,12 +142,27 @@ def main():
     samples_to_test = valid_samples[:args.n]
     
     # Load tool schema
-    tools = []
+    tools = None
     if args.tool_schema and args.tool_schema.exists():
         with open(args.tool_schema) as f:
-            tools = json.load(f)
-    elif "tools" in samples_to_test[0]:
+            schema_data = json.load(f)
+            # Handle wrapped format (our b4_standard_v1.json has {"tools": [...]})
+            if "tools" in schema_data and isinstance(schema_data["tools"], list):
+                tools = schema_data["tools"]
+            elif isinstance(schema_data, list):
+                tools = schema_data
+            else:
+                tools = schema_data
+    elif samples_to_test and "tools" in samples_to_test[0]:
         tools = samples_to_test[0]["tools"]
+    
+    # Debug: show tools format
+    if tools:
+        print(f"Loaded {len(tools)} tools")
+        if tools and len(tools) > 0:
+            print(f"First tool format: {json.dumps(tools[0], indent=2)[:200]}...")
+    else:
+        print("WARNING: No tools loaded - will generate without tool context")
     
     # System prompt
     system_prompt = "You are a helpful AI assistant with access to tools. Use the appropriate tool to help the user."
