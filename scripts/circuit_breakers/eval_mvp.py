@@ -465,7 +465,8 @@ def evaluate_tool_flip_asr(
             "observed_params": observed_params,
             "is_valid_json": is_valid_json,
             "outcome": outcome,
-            "response_preview": response[:200],
+            "response_full": response,  # Full response for analysis
+            "response_preview": response[:500] if len(response) > 500 else response,
         })
     
     total = len(results)
@@ -1051,6 +1052,11 @@ def main():
         help="Minimal output",
     )
     parser.add_argument(
+        "--no-details",
+        action="store_true",
+        help="Don't save per-sample details in output JSON (smaller file)",
+    )
+    parser.add_argument(
         "--fail-on-gate",
         action="store_true",
         help="Exit with code 1 if Stage 1 gates fail",
@@ -1114,21 +1120,38 @@ def main():
     
     # Save results
     if args.output:
-        # Remove details for cleaner output
-        clean_results = {k: v for k, v in results.items()}
-        for key in ["baseline", "cb_model"]:
-            if key in clean_results:
-                for metric_key in ["tool_flip_asr", "forced_function_call", "capability_retention"]:
-                    if metric_key in clean_results[key]:
-                        clean_results[key][metric_key] = {
-                            k: v for k, v in clean_results[key][metric_key].items()
-                            if k != "details"
-                        }
+        # By default, save everything including details for analysis
+        # Use --no-details to strip for cleaner output
+        if args.no_details:
+            clean_results = {k: v for k, v in results.items()}
+            for key in ["baseline", "cb_model"]:
+                if key in clean_results:
+                    for metric_key in ["tool_flip_asr", "forced_function_call", "capability_retention"]:
+                        if metric_key in clean_results[key]:
+                            clean_results[key][metric_key] = {
+                                k: v for k, v in clean_results[key][metric_key].items()
+                                if k != "details"
+                            }
+            save_results = clean_results
+        else:
+            save_results = results
         
         args.output.parent.mkdir(parents=True, exist_ok=True)
         with open(args.output, "w", encoding="utf-8") as f:
-            json.dump(clean_results, f, indent=2)
+            json.dump(save_results, f, indent=2, default=str)
         logger.info(f"Results saved to {args.output}")
+        
+        # Also save detailed outputs separately for analysis
+        details_path = args.output.with_suffix('.details.jsonl')
+        with open(details_path, "w", encoding="utf-8") as f:
+            for key in ["baseline", "cb_model"]:
+                if key in results:
+                    for metric_key in ["tool_flip_asr", "forced_function_call", "capability_retention"]:
+                        if metric_key in results[key] and "details" in results[key][metric_key]:
+                            for detail in results[key][metric_key]["details"]:
+                                record = {"model": key, "metric": metric_key, **detail}
+                                f.write(json.dumps(record, default=str) + "\n")
+        logger.info(f"Detailed outputs saved to {details_path}")
     
     # Exit code
     if args.fail_on_gate and not results.get("stage1_passed", True):
