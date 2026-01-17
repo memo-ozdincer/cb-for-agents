@@ -816,10 +816,20 @@ class CircuitBreakerDataset(Dataset):
         """
         Compute completion-only mask for a batch of sequences.
 
+        STAGE 2 FIX: Use TOKEN-BASED masking instead of character-based.
+        
+        Strategy (in order of priority):
+        1. If <|python_tag|> token exists → mask from that position onwards
+        2. Else if assistant end-header token exists → mask from there onwards  
+        3. Else fallback to full sequence
+
+        This ensures tool-call tokens are ALWAYS covered by the loss mask,
+        which is critical for training the reroute loss.
+
         Args:
             input_ids: (batch_size, seq_len)
             attention_mask: (batch_size, seq_len)
-            texts: Original texts before tokenization
+            texts: Original texts before tokenization (not used in new approach)
             has_completions: Whether each sample has a completion
 
         Returns:
@@ -831,48 +841,58 @@ class CircuitBreakerDataset(Dataset):
         batch_size, seq_len = input_ids.shape
         loss_mask = torch.zeros_like(attention_mask)
 
+        # Get special token IDs for Llama 3.1 format
         python_tag_id = self.tokenizer.convert_tokens_to_ids("<|python_tag|>")
+        
+        # Llama 3.1 assistant header ends with: <|end_header_id|>\n\n
+        # We want to mask from the token AFTER this header
+        end_header_id = self.tokenizer.convert_tokens_to_ids("<|end_header_id|>")
+        
+        # Track stats for debugging
+        self._mask_stats = getattr(self, '_mask_stats', {
+            'python_tag_found': 0,
+            'header_found': 0,
+            'fallback_full': 0,
+            'total': 0,
+        })
 
         for i in range(batch_size):
-            if not has_completions[i]:
-                # No completion available, use full sequence
-                loss_mask[i] = attention_mask[i]
-                continue
-
-            # Find where completion starts in text
-            text = texts[i]
-            completion_start_char = find_assistant_start_position(text)
-
-            if completion_start_char == 0:
-                # Couldn't find assistant marker, use full sequence
-                loss_mask[i] = attention_mask[i]
-                continue
-
-            # Tokenize prompt portion to find split point
-            prompt_text = text[:completion_start_char]
-            try:
-                # Use add_special_tokens=False to align with full-text tokenization
-                # (text already contains special tokens from chat template)
-                prompt_tokens = self.tokenizer.encode(
-                    prompt_text, add_special_tokens=False
-                )
-                prompt_len = len(prompt_tokens)
-            except Exception:
-                prompt_len = 0
-
-            # Create mask: 0 for prompt, 1 for completion
-            if prompt_len > 0 and prompt_len < seq_len:
-                loss_mask[i, prompt_len:] = attention_mask[i, prompt_len:]
-
-            # Ensure tool-call tokens are included in the completion mask
+            self._mask_stats['total'] += 1
+            tokens = input_ids[i]
+            
+            # Strategy 1: Find <|python_tag|> token - this is the PRIMARY target
+            # for tool-calling samples (both harmful and retain with tool calls)
             if python_tag_id is not None and python_tag_id != self.tokenizer.unk_token_id:
-                positions = (input_ids[i] == python_tag_id).nonzero(as_tuple=True)
-                if len(positions[0]) > 0:
-                    pos = positions[0][0].item()
-                    # Force mask to cover tool call tokens and after
-                    if loss_mask[i, pos] == 0:
-                        loss_mask[i] = torch.zeros_like(attention_mask[i])
-                        loss_mask[i, pos:] = attention_mask[i, pos:]
+                positions = (tokens == python_tag_id).nonzero(as_tuple=True)[0]
+                if len(positions) > 0:
+                    # Mask from first <|python_tag|> to end of sequence
+                    pos = positions[0].item()
+                    loss_mask[i, pos:] = attention_mask[i, pos:]
+                    self._mask_stats['python_tag_found'] += 1
+                    continue
+            
+            # Strategy 2: Find assistant end-header token
+            # For non-tool-call samples, mask the assistant's text response
+            if end_header_id is not None and end_header_id != self.tokenizer.unk_token_id:
+                positions = (tokens == end_header_id).nonzero(as_tuple=True)[0]
+                if len(positions) > 0:
+                    # Find the LAST <|end_header_id|> which should be the assistant's
+                    # In multi-turn, earlier ones are system/user headers
+                    pos = positions[-1].item()
+                    # Mask from the token AFTER the header (skip the newlines)
+                    start_pos = min(pos + 1, seq_len - 1)
+                    loss_mask[i, start_pos:] = attention_mask[i, start_pos:]
+                    self._mask_stats['header_found'] += 1
+                    continue
+            
+            # Strategy 3: Fallback - use full sequence (should be rare)
+            if has_completions[i]:
+                loss_mask[i] = attention_mask[i]
+                self._mask_stats['fallback_full'] += 1
+            else:
+                # No completion at all - shouldn't happen with proper data
+                loss_mask[i] = attention_mask[i]
+                self._mask_stats['fallback_full'] += 1
 
         return loss_mask
 
@@ -1500,24 +1520,40 @@ class CircuitBreakerTrainer:
         """
         Validate that completion masking is correctly targeting tool tokens.
         
+        STAGE 2 FIX: Enhanced validation with detailed token-level diagnostics.
+        
         This runs at training start to catch misconfigured masking early.
         Checks:
-        1. Assistant header is found in samples
-        2. Completion mask covers <|python_tag|> tokens (not user prompt)
-        3. Reports statistics on masking success rate
+        1. <|python_tag|> tokens are found in harmful samples
+        2. Completion mask covers these tokens
+        3. Reports detailed statistics on masking strategy used
         """
         self.accelerator.print("\n" + "=" * 60)
-        self.accelerator.print("VALIDATING COMPLETION MASKING")
+        self.accelerator.print("VALIDATING COMPLETION MASKING (STAGE 2)")
         self.accelerator.print("=" * 60)
         
-        # Get first few batches for validation
-        num_to_check = min(3, len(self.dataset))
-        stats = {
-            "total_samples": 0,
-            "found_assistant_header": 0,
-            "mask_covers_python_tag": 0,
-            "fallback_to_full_seq": 0,
+        # Reset mask stats before validation
+        self._mask_stats = {
+            'python_tag_found': 0,
+            'header_found': 0,
+            'fallback_full': 0,
+            'total': 0,
         }
+        
+        # Get first few batches for validation
+        num_to_check = min(5, len(self.dataset))
+        stats = {
+            "harmful_total": 0,
+            "harmful_with_python_tag": 0,
+            "harmful_mask_covers_tag": 0,
+            "benign_total": 0,
+            "mask_nonzero_ratio_sum": 0.0,
+        }
+        
+        python_tag_id = self.tokenizer.convert_tokens_to_ids("<|python_tag|>")
+        self.accelerator.print(f"\n  Token IDs:")
+        self.accelerator.print(f"    <|python_tag|> = {python_tag_id}")
+        self.accelerator.print(f"    <|end_header_id|> = {self.tokenizer.convert_tokens_to_ids('<|end_header_id|>')}")
         
         for batch_idx in range(num_to_check):
             batch = self.dataset[batch_idx]
@@ -1525,82 +1561,107 @@ class CircuitBreakerTrainer:
             # Check harmful samples
             harmful_ids = batch.get('harmful_input_ids')
             harmful_mask = batch.get('harmful_loss_mask', batch.get('harmful_attention_mask'))
+            harmful_attn = batch.get('harmful_attention_mask')
             
             if harmful_ids is not None:
                 batch_size = harmful_ids.shape[0] if len(harmful_ids.shape) > 1 else 1
                 if batch_size == 1 and len(harmful_ids.shape) == 1:
                     harmful_ids = harmful_ids.unsqueeze(0)
                     harmful_mask = harmful_mask.unsqueeze(0)
+                    harmful_attn = harmful_attn.unsqueeze(0) if harmful_attn is not None else None
                 
                 for i in range(batch_size):
-                    stats["total_samples"] += 1
-                    
-                    # Decode to check format
+                    stats["harmful_total"] += 1
                     tokens = harmful_ids[i]
-                    text = self.tokenizer.decode(tokens, skip_special_tokens=False)
                     
-                    # Check for Llama 3.1 assistant header
-                    if "<|start_header_id|>assistant<|end_header_id|>" in text:
-                        stats["found_assistant_header"] += 1
-                    else:
-                        self.accelerator.print(f"  ⚠ Sample {batch_idx}.{i}: No assistant header found")
-                    
-                    # Check if mask covers <|python_tag|>
-                    python_tag_id = self.tokenizer.convert_tokens_to_ids("<|python_tag|>")
+                    # Check for <|python_tag|>
                     if python_tag_id is not None and python_tag_id != self.tokenizer.unk_token_id:
-                        # Find position of python_tag
-                        positions = (tokens == python_tag_id).nonzero(as_tuple=True)
-                        if len(positions[0]) > 0:
-                            pos = positions[0][0].item()
+                        positions = (tokens == python_tag_id).nonzero(as_tuple=True)[0]
+                        if len(positions) > 0:
+                            stats["harmful_with_python_tag"] += 1
+                            pos = positions[0].item()
+                            
+                            # Check if mask covers the python_tag
                             if harmful_mask[i, pos] > 0:
-                                stats["mask_covers_python_tag"] += 1
+                                stats["harmful_mask_covers_tag"] += 1
                             else:
+                                # This would be a critical bug
                                 self.accelerator.print(
-                                    f"  ⚠ Sample {batch_idx}.{i}: <|python_tag|> at pos {pos} "
-                                    f"but mask[{pos}]={harmful_mask[i, pos].item()}"
+                                    f"  🚨 CRITICAL: Batch {batch_idx}.{i}: <|python_tag|> at pos {pos} "
+                                    f"NOT covered by mask (mask[{pos}]={harmful_mask[i, pos].item()})"
                                 )
                     
-                    # Check for fallback (mask == attention_mask)
-                    attn_mask = batch.get('harmful_attention_mask')
-                    if attn_mask is not None:
-                        if batch_size == 1 and len(attn_mask.shape) == 1:
-                            attn_mask = attn_mask.unsqueeze(0)
-                        if torch.equal(harmful_mask[i], attn_mask[i]):
-                            stats["fallback_to_full_seq"] += 1
+                    # Compute mask coverage ratio
+                    if harmful_attn is not None:
+                        valid_tokens = harmful_attn[i].sum().item()
+                        masked_tokens = harmful_mask[i].sum().item()
+                        if valid_tokens > 0:
+                            stats["mask_nonzero_ratio_sum"] += masked_tokens / valid_tokens
+            
+            # Count benign
+            benign_ids = batch.get('benign_input_ids')
+            if benign_ids is not None:
+                batch_size = benign_ids.shape[0] if len(benign_ids.shape) > 1 else 1
+                stats["benign_total"] += batch_size
         
         # Report results
-        total = stats["total_samples"]
-        if total > 0:
-            self.accelerator.print(f"\n  Checked {total} harmful samples from {num_to_check} batches:")
+        h_total = stats["harmful_total"]
+        h_with_tag = stats["harmful_with_python_tag"]
+        h_covered = stats["harmful_mask_covers_tag"]
+        
+        self.accelerator.print(f"\n  Checked {num_to_check} batches:")
+        self.accelerator.print(f"    Harmful samples: {h_total}")
+        self.accelerator.print(f"    Benign samples:  {stats['benign_total']}")
+        
+        if h_total > 0:
+            self.accelerator.print(f"\n  Harmful sample analysis:")
             self.accelerator.print(
-                f"  - Assistant header found: {stats['found_assistant_header']}/{total} "
-                f"({100*stats['found_assistant_header']/total:.1f}%)"
-            )
-            self.accelerator.print(
-                f"  - Mask covers <|python_tag|>: {stats['mask_covers_python_tag']}/{total} "
-                f"({100*stats['mask_covers_python_tag']/total:.1f}%)"
-            )
-            self.accelerator.print(
-                f"  - Fallback to full sequence: {stats['fallback_to_full_seq']}/{total} "
-                f"({100*stats['fallback_to_full_seq']/total:.1f}%)"
+                f"    - Samples with <|python_tag|>: {h_with_tag}/{h_total} "
+                f"({100*h_with_tag/h_total:.1f}%)"
             )
             
-            # Warn if too many fallbacks
-            if stats["fallback_to_full_seq"] > total * 0.5:
+            if h_with_tag > 0:
+                coverage_pct = 100 * h_covered / h_with_tag
                 self.accelerator.print(
-                    "\n  ⚠️ WARNING: >50% samples using full-sequence masking!"
-                    "\n  This means completion masking is NOT working properly."
-                    "\n  Check that training data has <|start_header_id|>assistant<|end_header_id|> format."
+                    f"    - Mask covers <|python_tag|>: {h_covered}/{h_with_tag} "
+                    f"({coverage_pct:.1f}%)"
+                )
+                
+                if coverage_pct < 99:
+                    self.accelerator.print(
+                        "\n  🚨 CRITICAL: Mask is NOT covering tool-call tokens!"
+                        "\n  This will prevent the reroute loss from training correctly."
+                    )
+                elif coverage_pct >= 99:
+                    self.accelerator.print(
+                        "\n  ✅ GOOD: Mask correctly covers tool-call tokens."
+                    )
+            else:
+                self.accelerator.print(
+                    "\n  ⚠️ WARNING: No harmful samples have <|python_tag|>!"
+                    "\n  Use --require-tool-calls-harmful in create_stage2_batches.py"
                 )
             
-            # Warn if python_tag not being masked
-            if stats["mask_covers_python_tag"] < stats["found_assistant_header"] * 0.9:
-                self.accelerator.print(
-                    "\n  ⚠️ WARNING: <|python_tag|> tokens not covered by loss mask!"
-                    "\n  Training will NOT learn to reroute tool calls."
-                )
-        else:
-            self.accelerator.print("  No samples to validate")
+            # Average mask coverage
+            avg_ratio = stats["mask_nonzero_ratio_sum"] / h_total
+            self.accelerator.print(f"    - Avg mask coverage ratio: {avg_ratio:.1%}")
+        
+        # Report internal mask stats
+        ms = self._mask_stats
+        if ms['total'] > 0:
+            self.accelerator.print(f"\n  Masking strategy used:")
+            self.accelerator.print(
+                f"    - <|python_tag|> found: {ms['python_tag_found']}/{ms['total']} "
+                f"({100*ms['python_tag_found']/ms['total']:.1f}%)"
+            )
+            self.accelerator.print(
+                f"    - Header fallback: {ms['header_found']}/{ms['total']} "
+                f"({100*ms['header_found']/ms['total']:.1f}%)"
+            )
+            self.accelerator.print(
+                f"    - Full sequence fallback: {ms['fallback_full']}/{ms['total']} "
+                f"({100*ms['fallback_full']/ms['total']:.1f}%)"
+            )
         
         self.accelerator.print("=" * 60 + "\n")
 
