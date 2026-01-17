@@ -53,10 +53,17 @@ def build_batches(
     benign_per_harmful: int,
     seed: int,
     max_harmful: int | None,
+    require_tool_calls_harmful: bool,
 ) -> List[Dict[str, Any]]:
     random.seed(seed)
     random.shuffle(harmful)
     random.shuffle(benign)
+
+    if require_tool_calls_harmful:
+        harmful = [
+            s for s in harmful
+            if "<|python_tag|>" in (s.get("assistant_raw", "") or "")
+        ]
 
     if max_harmful is not None:
         harmful = harmful[:max_harmful]
@@ -92,6 +99,11 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True, help="Output cb_training_batches.jsonl")
     parser.add_argument("--benign-per-harmful", type=int, default=5, help="Dr samples per Ds sample")
     parser.add_argument("--max-harmful", type=int, default=None, help="Limit number of harmful samples")
+    parser.add_argument(
+        "--require-tool-calls-harmful",
+        action="store_true",
+        help="Only keep harmful samples with <|python_tag|> in assistant_raw",
+    )
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     args = parser.parse_args()
 
@@ -106,6 +118,7 @@ def main() -> None:
         args.benign_per_harmful,
         args.seed,
         args.max_harmful,
+        args.require_tool_calls_harmful,
     )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)

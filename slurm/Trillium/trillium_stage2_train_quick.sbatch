@@ -74,7 +74,8 @@ python scripts/cb_data_generation/create_stage2_batches.py \
     --input "$MERGED_FILE" \
     --output "$QUICK_BATCHES" \
     --benign-per-harmful 2 \
-    --max-harmful 50
+    --max-harmful 50 \
+    --require-tool-calls-harmful
 
 echo "Quick batches: $QUICK_BATCHES ($(wc -l < "$QUICK_BATCHES") batches)"
 

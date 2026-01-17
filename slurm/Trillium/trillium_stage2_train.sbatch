@@ -106,7 +106,8 @@ STAGE2_BATCHES="$STAGE2_DATA_DIR/stage2/train_batches.jsonl"
 python scripts/cb_data_generation/create_stage2_batches.py \
     --input "$COMBINED_FILE" \
     --output "$STAGE2_BATCHES" \
-    --benign-per-harmful 5
+    --benign-per-harmful 5 \
+    --require-tool-calls-harmful
 
 echo "Batches file: $STAGE2_BATCHES ($(wc -l < "$STAGE2_BATCHES") batches)"
 COMBINED_FILE="$STAGE2_BATCHES"

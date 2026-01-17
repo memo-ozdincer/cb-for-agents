@@ -52,44 +52,45 @@ def generate_sample_id(source: str, split: str, content_hash_input: str) -> str:
 # AgentDojo Parsing
 # =============================================================================
 
-def extract_last_assistant_content(messages: List[Dict[str, Any]]) -> str:
+def extract_last_assistant_content(messages: List[Dict[str, Any]]) -> tuple[int | None, str, str | None, bool]:
     """
-    Extract the last assistant message content, including tool calls if present.
-    
-    AgentDojo format has tool_calls in assistant messages.
-    We need to format these for Llama 3.1 tool-calling format.
+    Extract the last assistant tool call if available; otherwise fallback to
+    the last assistant text content.
+
+    Returns:
+        (assistant_idx, assistant_raw, observed_tool, has_tool_calls)
     """
-    # Find last assistant message
-    for msg in reversed(messages):
+    # Prefer the LAST assistant message that contains tool_calls
+    for idx in range(len(messages) - 1, -1, -1):
+        msg = messages[idx]
+        if msg.get("role") != "assistant":
+            continue
+        tool_calls = msg.get("tool_calls")
+        if tool_calls:
+            tc = tool_calls[0]
+            func = tc.get("function", {})
+            tool_name = func.get("name", "")
+
+            args = func.get("arguments", {})
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except json.JSONDecodeError:
+                    args = {}
+
+            tool_call_json = {"name": tool_name, "parameters": args}
+            assistant_raw = f'<|python_tag|>{json.dumps(tool_call_json)}<|eom_id|>'
+            return idx, assistant_raw, tool_name or None, True
+
+    # Fallback: last assistant text content
+    for idx in range(len(messages) - 1, -1, -1):
+        msg = messages[idx]
         if msg.get("role") == "assistant":
-            # Check for tool_calls
-            tool_calls = msg.get("tool_calls")
-            if tool_calls and len(tool_calls) > 0:
-                # Format first tool call in Llama 3.1 format
-                tc = tool_calls[0]
-                func = tc.get("function", {})
-                tool_name = func.get("name", "")
-                
-                # Arguments can be string or dict
-                args = func.get("arguments", {})
-                if isinstance(args, str):
-                    try:
-                        args = json.loads(args)
-                    except json.JSONDecodeError:
-                        args = {}
-                
-                tool_call_json = {
-                    "name": tool_name,
-                    "parameters": args
-                }
-                return f'<|python_tag|>{json.dumps(tool_call_json)}<|eom_id|>'
-            
-            # No tool calls, return text content
             content = msg.get("content", "")
             if content:
-                return content
-    
-    return ""
+                return idx, content, None, False
+
+    return None, "", None, False
 
 
 def extract_tool_name_from_assistant(messages: List[Dict[str, Any]]) -> Optional[str]:
@@ -97,15 +98,18 @@ def extract_tool_name_from_assistant(messages: List[Dict[str, Any]]) -> Optional
     for msg in reversed(messages):
         if msg.get("role") == "assistant":
             tool_calls = msg.get("tool_calls")
-            if tool_calls and len(tool_calls) > 0:
+            if tool_calls:
                 tc = tool_calls[0]
                 func = tc.get("function", {})
-                return func.get("name")
+                name = func.get("name")
+                if name:
+                    return name
     return None
 
 
 def convert_messages_to_standard_format(
-    messages: List[Dict[str, Any]]
+    messages: List[Dict[str, Any]],
+    last_assistant_idx: Optional[int] = None,
 ) -> List[Dict[str, str]]:
     """
     Convert AgentDojo messages to standard format (system, user, assistant).
@@ -118,11 +122,12 @@ def convert_messages_to_standard_format(
     
     We extract the pre-assistant context (all messages before last assistant turn).
     """
-    # Find the index of the last assistant message
-    last_assistant_idx = -1
-    for i, msg in enumerate(messages):
-        if msg.get("role") == "assistant":
-            last_assistant_idx = i
+    # Find the index of the last assistant message (or use provided index)
+    if last_assistant_idx is None:
+        last_assistant_idx = -1
+        for i, msg in enumerate(messages):
+            if msg.get("role") == "assistant":
+                last_assistant_idx = i
     
     if last_assistant_idx < 0:
         # No assistant message, return all as context
@@ -134,7 +139,7 @@ def convert_messages_to_standard_format(
                 result.append({"role": role, "content": content})
         return result
     
-    # Return messages up to (but not including) last assistant
+    # Return messages up to (but not including) the target assistant
     result = []
     for msg in messages[:last_assistant_idx]:
         role = msg.get("role", "user")
@@ -204,21 +209,18 @@ def process_agentdojo_records(
         security = record_metadata.get("security", True)
         success = record_metadata.get("success", False)
 
-        # Extract assistant content
-        assistant_raw = extract_last_assistant_content(messages)
-        if not assistant_raw:
+        # Extract assistant content (prefer last tool call)
+        assistant_idx, assistant_raw, observed_tool, has_tool_calls = extract_last_assistant_content(messages)
+        if not assistant_raw or assistant_idx is None:
             continue
 
-        # Extract tool name for labels
-        observed_tool = extract_tool_name_from_assistant(messages)
-
         # Convert messages to standard format
-        context_messages = convert_messages_to_standard_format(messages)
+        context_messages = convert_messages_to_standard_format(messages, last_assistant_idx=assistant_idx)
         if not context_messages:
             continue
 
         # Determine if this has tool calls
-        has_tool_calls = "<|python_tag|>" in assistant_raw
+        has_tool_calls = "<|python_tag|>" in assistant_raw or has_tool_calls
 
         # Determine split and priority_class
         if security == False:
