@@ -3,10 +3,9 @@
 #SBATCH --job-name=inspect_batches
 #SBATCH --output=/scratch/memoozd/logs/%x_%j.out
 #SBATCH --error=/scratch/memoozd/logs/%x_%j.err
-#SBATCH --time=00:10:00
+#SBATCH --time=00:16:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=16G
 
 # ============================================================================
 # DIAGNOSTIC: Inspect training batches to see actual data
