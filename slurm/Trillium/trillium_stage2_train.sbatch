@@ -170,12 +170,21 @@ python scripts/circuit_breakers/sanity_check.py \
 # =============================================================================
 echo ""
 echo "Generating sample outputs to verify no collapse..."
-python scripts/circuit_breakers/sample_outputs.py \
-    --eval-data "$DATA_DIR/eval_stage1.jsonl" \
-    --cb-adapter "$OUTPUT_DIR/final" \
-    --tool-schema "$PROJECT_DIR/configs/tool_schemas/b4_standard_v1.json" \
-    --n 5 \
-    2>&1 | tee "$RUN_DIR/sample_outputs.txt"
+EVAL_FILE="$STAGE2_DATA_DIR/stage2/eval.jsonl"
+if [[ ! -f "$EVAL_FILE" ]]; then
+  EVAL_FILE="$CB_DATA_DIR/stage2/eval.jsonl"
+fi
+
+if [[ -f "$EVAL_FILE" ]]; then
+  python scripts/circuit_breakers/sample_outputs.py \
+      --eval-data "$EVAL_FILE" \
+      --cb-adapter "$OUTPUT_DIR/final" \
+      --tool-schema "$REPO_DIR/configs/tool_schemas/b4_standard_v1.json" \
+      --n 5 \
+      2>&1 | tee "$RUN_DIR/sample_outputs.txt"
+else
+  echo "WARNING: eval data not found; skipping sample_outputs.py"
+fi
 
 # =============================================================================
 # Create symlink

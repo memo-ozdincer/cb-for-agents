@@ -831,6 +831,8 @@ class CircuitBreakerDataset(Dataset):
         batch_size, seq_len = input_ids.shape
         loss_mask = torch.zeros_like(attention_mask)
 
+        python_tag_id = self.tokenizer.convert_tokens_to_ids("<|python_tag|>")
+
         for i in range(batch_size):
             if not has_completions[i]:
                 # No completion available, use full sequence
@@ -859,6 +861,14 @@ class CircuitBreakerDataset(Dataset):
             # Create mask: 0 for prompt, 1 for completion
             if prompt_len > 0 and prompt_len < seq_len:
                 loss_mask[i, prompt_len:] = attention_mask[i, prompt_len:]
+
+            # Ensure tool-call tokens are included in the completion mask
+            if python_tag_id is not None and python_tag_id != self.tokenizer.unk_token_id:
+                positions = (input_ids[i] == python_tag_id).nonzero(as_tuple=True)
+                if len(positions[0]) > 0:
+                    pos = positions[0][0].item()
+                    if loss_mask[i, pos] == 0:
+                        loss_mask[i, pos:] = attention_mask[i, pos:]
 
         return loss_mask
 
