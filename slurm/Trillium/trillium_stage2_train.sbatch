@@ -4,8 +4,6 @@
 #SBATCH --error=/scratch/memoozd/logs/%x_%j.err
 #SBATCH --time=04:00:00
 #SBATCH --nodes=1
-#SBATCH --gpus-per-node=4
-#SBATCH --mem=192G
 #SBATCH --cpus-per-task=32
 
 # ============================================================================
