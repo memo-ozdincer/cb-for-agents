@@ -869,7 +869,9 @@ class CircuitBreakerDataset(Dataset):
                 positions = (input_ids[i] == python_tag_id).nonzero(as_tuple=True)
                 if len(positions[0]) > 0:
                     pos = positions[0][0].item()
+                    # Force mask to cover tool call tokens and after
                     if loss_mask[i, pos] == 0:
+                        loss_mask[i] = torch.zeros_like(attention_mask[i])
                         loss_mask[i, pos:] = attention_mask[i, pos:]
 
         return loss_mask
