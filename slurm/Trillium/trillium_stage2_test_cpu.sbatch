@@ -60,6 +60,8 @@ export HF_HOME="$CACHE_ROOT/hf"
 export HF_DATASETS_CACHE="$CACHE_ROOT/hf/datasets"
 export TORCH_HOME="$CACHE_ROOT/torch"
 export XDG_CACHE_HOME="$CACHE_ROOT/xdg"
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
 
 echo ""
 echo "========================================================================"
@@ -172,12 +174,18 @@ export TRAIN_FILE
 python << 'PYEOF'
 import json
 import os
+from huggingface_hub import snapshot_download
 from transformers import AutoTokenizer
 
 print("Loading tokenizer...")
+model_path = snapshot_download(
+    repo_id="meta-llama/Llama-3.1-8B-Instruct",
+    local_files_only=True
+)
 tokenizer = AutoTokenizer.from_pretrained(
-    "meta-llama/Llama-3.1-8B-Instruct",
-    use_fast=True
+    model_path,
+    use_fast=True,
+    local_files_only=True
 )
 
 print("Testing tokenization on 5 samples...")
