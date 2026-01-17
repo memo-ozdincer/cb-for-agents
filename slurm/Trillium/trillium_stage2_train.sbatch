@@ -22,11 +22,27 @@ set -e
 # =============================================================================
 # Environment Setup
 # =============================================================================
-PROJECT_DIR="/project/def-zhijing/memoozd/harmful-agents-meta-dataset"
+PROJECT_DIR="/project/def-zhijing/memoozd"
 SCRATCH_DIR="/scratch/memoozd"
+REPO_DIR="$PROJECT_DIR/harmful-agents-meta-dataset"
+VENV_DIR="$PROJECT_DIR/.venvs/cb_env"
 
-source "$PROJECT_DIR/agent_adversarial/bin/activate"
-cd "$PROJECT_DIR"
+cd "$REPO_DIR"
+
+echo "=== Module setup ==="
+module --force purge || true
+module load StdEnv/2023
+module load cuda/12.6
+module load python/3.11.5
+module list
+
+echo "=== Venv activation ==="
+if [[ ! -d "$VENV_DIR" ]]; then
+  echo "ERROR: venv not found at $VENV_DIR"
+  exit 1
+fi
+source "$VENV_DIR/bin/activate"
+echo "Python: $(python -V)"
 
 # Offline mode
 export HF_HOME="$SCRATCH_DIR/cb_cache/hf"
