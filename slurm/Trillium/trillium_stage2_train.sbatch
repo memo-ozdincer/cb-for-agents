@@ -4,7 +4,7 @@
 #SBATCH --error=/scratch/memoozd/logs/%x_%j.err
 #SBATCH --time=04:00:00
 #SBATCH --nodes=1
-#SBATCH --gpus-per-node=4
+#SBATCH --gpus-per-node=1
 
 # ============================================================================
 # Stage 2 MVP: Circuit Breaker Training - FIXED FOR REPRESENTATION COLLAPSE
