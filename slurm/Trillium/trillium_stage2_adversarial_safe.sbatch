@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=stage2_adv_safe
-#SBATCH --nodes=1
 #SBATCH --gpus-per-node=1
+#SBATCH --cpus-per-task=4
 #SBATCH --time=02:00:00
 #SBATCH --output=/scratch/memoozd/logs/%x_%j.out
 #SBATCH --error=/scratch/memoozd/logs/%x_%j.err
