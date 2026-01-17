@@ -45,6 +45,9 @@ fi
 source "$VENV_DIR/bin/activate"
 echo "Python: $(python -V)"
 
+echo "=== W&B setup ==="
+export WANDB_MODE=disabled
+
 # Offline mode
 export HF_HOME="$SCRATCH_DIR/cb_cache/hf"
 export HF_HUB_CACHE="$SCRATCH_DIR/cb_cache/hf/hub"
