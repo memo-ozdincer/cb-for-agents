@@ -76,30 +76,27 @@ class ValidationResult:
 
 
 def validate_messages(sample: Dict[str, Any], result: ValidationResult):
-    """Validate messages array structure."""
+    """Validate messages array structure (relaxed for Stage 2)."""
     messages = sample.get("messages")
-    
+
     if messages is None:
         result.add_error("Missing 'messages' array")
         return
-    
+
     if not isinstance(messages, list):
         result.add_error(f"'messages' should be a list, got {type(messages).__name__}")
         return
-    
-    if len(messages) < 2:
-        result.add_error(f"'messages' should have at least 2 items (system + user), got {len(messages)}")
+
+    if len(messages) < 1:
+        result.add_error(f"'messages' should have at least 1 item, got {len(messages)}")
         return
-    
+
     # Check roles
     roles = [m.get("role") for m in messages]
-    
-    if "system" not in roles:
-        result.add_warning("No 'system' message in messages array")
-    
+
     if "user" not in roles:
         result.add_error("No 'user' message in messages array")
-    
+
     # Check each message has content
     for i, msg in enumerate(messages):
         if not isinstance(msg, dict):
@@ -112,13 +109,13 @@ def validate_messages(sample: Dict[str, Any], result: ValidationResult):
 
 
 def validate_tools(sample: Dict[str, Any], result: ValidationResult):
-    """Validate tools definition or reference."""
+    """Validate tools definition or reference (relaxed for Stage 2)."""
     tools = sample.get("tools")
-    
+
+    # Allow None for non-tool samples (e.g., UltraChat general conversation)
     if tools is None:
-        result.add_error("Missing 'tools' field")
-        return
-    
+        return  # Valid for retain samples without tools
+
     if isinstance(tools, str):
         # Reference to frozen schema (e.g., "b4_standard_v1")
         if not tools.strip():
@@ -128,56 +125,52 @@ def validate_tools(sample: Dict[str, Any], result: ValidationResult):
         if len(tools) == 0:
             result.add_warning("Empty 'tools' array")
     else:
-        result.add_error(f"'tools' should be string or list, got {type(tools).__name__}")
+        result.add_error(f"'tools' should be string, list, or null, got {type(tools).__name__}")
 
 
 def validate_assistant_raw(sample: Dict[str, Any], result: ValidationResult):
-    """Validate assistant_raw follows Llama 3.1 format."""
+    """Validate assistant_raw follows Llama 3.1 format (relaxed for Stage 2)."""
     assistant_raw = sample.get("assistant_raw")
-    
+
     if assistant_raw is None:
         result.add_error("Missing 'assistant_raw' field")
         return
-    
+
     if not isinstance(assistant_raw, str):
         result.add_error(f"'assistant_raw' should be string, got {type(assistant_raw).__name__}")
         return
-    
+
     if not assistant_raw.strip():
         result.add_error("Empty 'assistant_raw'")
         return
-    
-    # Must contain <|python_tag|>
-    if "<|python_tag|>" not in assistant_raw:
-        result.add_error("Missing <|python_tag|> in assistant_raw")
-    
-    # Check for end tokens (but make it a warning, not error)
-    # vLLM may not include these even with skip_special_tokens=False
-    stripped = assistant_raw.rstrip()
-    has_valid_end = (
-        stripped.endswith("<|eom_id|>") or 
-        stripped.endswith("<|eot_id|}") or
-        stripped.endswith("<|eot_id|>")
-    )
-    
-    # Also check if end token exists anywhere (might have trailing whitespace/content)
-    has_end_token = "<|eom_id|>" in assistant_raw or "<|eot_id|>" in assistant_raw
-    
-    if not has_end_token:
-        result.add_warning("Missing <|eom_id|> or <|eot_id|> in assistant_raw (not critical for training)")
-    elif not has_valid_end:
-        result.add_warning("End token not at end of assistant_raw (trailing content)")
-    
-    # Must NOT have markdown wrappers
-    if "```" in assistant_raw:
-        result.add_error("Contains markdown code block (```) in assistant_raw")
-    
-    # Must NOT have common prefixes
+
+    # Only require <|python_tag|> if metadata indicates tool calls
+    has_tool_calls = sample.get("metadata", {}).get("has_tool_calls", False)
+    has_python_tag = "<|python_tag|>" in assistant_raw
+
+    if has_tool_calls and not has_python_tag:
+        result.add_error("has_tool_calls=true but missing <|python_tag|> in assistant_raw")
+
+    # Check for end tokens only if has tool calls
+    if has_python_tag:
+        stripped = assistant_raw.rstrip()
+        has_end_token = "<|eom_id|>" in assistant_raw or "<|eot_id|>" in assistant_raw
+
+        if not has_end_token:
+            result.add_warning("Tool call missing <|eom_id|> or <|eot_id|>")
+
+    # Must NOT have markdown wrappers IN TOOL CALLS
+    # (markdown is ok in text-only responses like AgentDojo refusals)
+    if "```" in assistant_raw and has_python_tag:
+        result.add_error("Contains markdown code block (```) in tool call")
+
+    # Must NOT have common prefixes in tool calls
     forbidden_prefixes = ["Action:", "ToolCall:", "Function:", "Tool:"]
-    for prefix in forbidden_prefixes:
-        if assistant_raw.strip().startswith(prefix):
-            result.add_error(f"Forbidden prefix '{prefix}' in assistant_raw")
-            break
+    if has_python_tag:
+        for prefix in forbidden_prefixes:
+            if assistant_raw.strip().startswith(prefix):
+                result.add_error(f"Forbidden prefix '{prefix}' in tool call")
+                break
 
 
 def validate_tool_calls_structured(sample: Dict[str, Any], result: ValidationResult):
@@ -203,32 +196,57 @@ def validate_tool_calls_structured(sample: Dict[str, Any], result: ValidationRes
 
 
 def validate_labels(sample: Dict[str, Any], result: ValidationResult, set_type: str):
-    """Validate labels based on set type (ds or dr)."""
+    """Validate labels based on set type and data source (Stage 2 aware)."""
     labels = sample.get("labels")
-    
+
     if labels is None:
         result.add_error("Missing 'labels' field")
         return
-    
+
     if not isinstance(labels, dict):
         result.add_error(f"'labels' should be dict, got {type(labels).__name__}")
         return
-    
-    # Check required label fields
-    required_fields = ["expected_tool", "observed_tool", "is_flip_success"]
-    for field in required_fields:
-        if field not in labels:
-            result.add_error(f"Missing 'labels.{field}'")
-    
-    # Validate is_flip_success based on set type
-    is_flip_success = labels.get("is_flip_success")
-    
-    if set_type == "ds":
+
+    # Check for split field
+    split = labels.get("split")
+    if not split:
+        result.add_warning("Missing 'labels.split'")
+        # Fallback to set_type if split not present
+        split = set_type
+
+    # Get data source to determine required fields
+    source = sample.get("metadata", {}).get("source", "")
+
+    # B4-style harmful samples require tool flip fields
+    is_b4_harmful = (split == "harmful" and "fujitsu" in source.lower())
+
+    if is_b4_harmful:
+        # Strict B4 validation
+        required_fields = ["expected_tool", "simulated_tool", "is_flip_success"]
+        for field in required_fields:
+            if field not in labels:
+                result.add_error(f"B4 harmful sample missing 'labels.{field}'")
+
+        is_flip_success = labels.get("is_flip_success")
         if is_flip_success is not True:
-            result.add_error(f"Ds sample must have is_flip_success=true, got {is_flip_success}")
-    elif set_type == "dr":
-        if is_flip_success is not False:
-            result.add_error(f"Dr sample must have is_flip_success=false, got {is_flip_success}")
+            result.add_error(f"B4 harmful sample must have is_flip_success=true, got {is_flip_success}")
+
+    # AgentDojo samples have different fields
+    elif "agentdojo" in source.lower():
+        # AgentDojo validation (more relaxed)
+        if split == "harmful":
+            # Harmful AgentDojo should have security=False
+            if labels.get("security") is not False:
+                result.add_warning(f"AgentDojo harmful sample should have security=false")
+        elif split == "retain":
+            # Retain AgentDojo should have security=True or is_adversarial_safe=True
+            if not (labels.get("security") is True or labels.get("is_adversarial_safe") is True):
+                result.add_warning(f"AgentDojo retain sample should have security=true or is_adversarial_safe=true")
+
+    # Retain samples with is_adversarial_safe should be true
+    if split == "retain" and "is_adversarial_safe" in labels:
+        if labels.get("is_adversarial_safe") is not True:
+            result.add_warning(f"Retain sample with is_adversarial_safe should be true, got {labels.get('is_adversarial_safe')}")
 
 
 def validate_metadata(sample: Dict[str, Any], result: ValidationResult):
@@ -255,18 +273,27 @@ def validate_sample(
     set_type: str = "ds",
 ) -> ValidationResult:
     """
-    Validate a single sample against the MVP schema.
-    
+    Validate a single sample against the Stage 2 schema.
+
     Args:
         sample: The sample to validate
-        set_type: "ds" for circuit breaker set, "dr" for retain set
-    
+        set_type: "ds" for harmful, "dr" for retain (auto-detected from sample if possible)
+
     Returns:
         ValidationResult with errors and warnings
     """
     sample_id = sample.get("id", "unknown")
     result = ValidationResult(sample_id)
-    
+
+    # Auto-detect set_type from sample's labels.split if available (Stage 2)
+    labels = sample.get("labels", {})
+    if isinstance(labels, dict) and "split" in labels:
+        detected_split = labels.get("split")
+        if detected_split == "harmful":
+            set_type = "ds"
+        elif detected_split == "retain":
+            set_type = "dr"
+
     # Run all validators
     validate_messages(sample, result)
     validate_tools(sample, result)
@@ -274,7 +301,7 @@ def validate_sample(
     validate_tool_calls_structured(sample, result)
     validate_labels(sample, result, set_type)
     validate_metadata(sample, result)
-    
+
     return result
 
 

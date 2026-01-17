@@ -20,9 +20,11 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import logging
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -33,6 +35,16 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parents[2]
+
+
+# =============================================================================
+# ID Generation (per canonical schema)
+# =============================================================================
+
+def generate_sample_id(source: str, split: str, content_hash_input: str) -> str:
+    """Generate deterministic, collision-resistant ID per 01_DATA_SPEC.md."""
+    content_hash = hashlib.sha256(content_hash_input.encode()).hexdigest()[:8]
+    return f"{source}_{split}_{content_hash}"
 
 
 # =============================================================================
@@ -66,40 +78,41 @@ def convert_tau2_trace_to_sample(
     trace: Dict[str, Any],
     domain: str,
     task_id: str,
+    timestamp: str,
 ) -> Optional[Dict[str, Any]]:
     """
-    Convert a TAU2 trace to CB training format.
-    
+    Convert a TAU2 trace to canonical CB training format (01_DATA_SPEC.md).
+
     TAU2 trace structure varies, but typically has:
     - conversation: List of turns
     - actions: List of agent actions with tools
     """
     messages = []
     assistant_raw = None
-    
+
     # Try to extract conversation
     conversation = trace.get("conversation", [])
     actions = trace.get("actions", [])
-    
+
     # If trace has conversation format
     if conversation:
         for turn in conversation:
             role = turn.get("role", "")
             content = turn.get("content", "")
-            
+
             if role == "user" and content:
                 messages.append({"role": "user", "content": content})
             elif role == "assistant" and content:
                 messages.append({"role": "assistant", "content": content})
             elif role == "system" and content:
                 messages.append({"role": "system", "content": content})
-    
+
     # If trace has actions, use the last action as assistant_raw
     if actions and len(actions) > 0:
         last_action = actions[-1]
         if isinstance(last_action, dict) and "action_type" in last_action:
             assistant_raw = convert_tau2_action_to_tool_call(last_action)
-    
+
     # Fallback: use last assistant message
     if not assistant_raw and messages:
         for msg in reversed(messages):
@@ -108,27 +121,51 @@ def convert_tau2_trace_to_sample(
                 # Remove from messages to avoid duplication
                 messages = messages[:-1] if messages[-1] == msg else messages
                 break
-    
+
     if not messages or not assistant_raw:
         return None
-    
+
     # Determine if has tool calls
     has_tool_calls = "<|python_tag|>" in assistant_raw
-    
-    return {
+
+    # Generate deterministic ID
+    content_hash_input = json.dumps({
         "messages": messages,
         "assistant_raw": assistant_raw,
+        "domain": domain,
+        "task_id": task_id,
+    }, sort_keys=True)
+    sample_id = generate_sample_id("tau2", "retain", content_hash_input)
+
+    # Canonical schema
+    return {
+        "id": sample_id,
+        "messages": messages,
+        "assistant_raw": assistant_raw,
+        "tools": "tau2_native" if has_tool_calls else None,
+
+        # Labels for loss masking & filtering
         "labels": {
+            "split": "retain",
             "domain": domain,
             "task_id": task_id,
-            "has_tool_calls": has_tool_calls,
         },
+
+        # Training controls
+        "training": {
+            "priority_class": "tool_capability",
+            "sample_weight": 1.0,
+        },
+
+        # Provenance metadata
         "metadata": {
-            "split": "retain",
             "source": "tau2",
             "domain": domain,
             "task_id": task_id,
             "has_tool_calls": has_tool_calls,
+            "schema_version": "stage2_v1",
+            "created_at": timestamp,
+            "pipeline_version": "stage2_v1",
         },
     }
 
@@ -136,100 +173,127 @@ def convert_tau2_trace_to_sample(
 def load_tau2_traces_from_results(
     results_dir: Path,
     domain: str,
+    timestamp: str,
     limit: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """Load traces from TAU2 results directory."""
     samples = []
-    
+
     if not results_dir.exists():
         logger.warning(f"Results directory not found: {results_dir}")
         return samples
-    
+
     # Look for JSON files in results directory
     json_files = list(results_dir.glob("*.json"))
-    
+
     for file_path in json_files:
         if limit and len(samples) >= limit:
             break
-        
+
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 trace = json.load(f)
-            
+
             sample = convert_tau2_trace_to_sample(
-                trace, domain, file_path.stem
+                trace, domain, file_path.stem, timestamp
             )
-            
+
             if sample:
                 samples.append(sample)
-        
+
         except (json.JSONDecodeError, Exception) as e:
             logger.debug(f"Error processing {file_path.name}: {e}")
             continue
-    
+
     return samples
 
 
 def load_tau2_tasks_as_samples(
     tasks_path: Path,
     domain: str,
+    timestamp: str,
     limit: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """
-    Load TAU2 tasks and convert to samples.
-    
+    Load TAU2 tasks and convert to canonical format samples.
+
     Tasks file contains task definitions with user instructions.
     We create samples from these for capability retention.
     """
     samples = []
-    
+
     if not tasks_path.exists():
         logger.warning(f"Tasks file not found: {tasks_path}")
         return samples
-    
+
     try:
         with open(tasks_path, "r", encoding="utf-8") as f:
             tasks = json.load(f)
     except (json.JSONDecodeError, Exception) as e:
         logger.warning(f"Error loading tasks: {e}")
         return samples
-    
+
     # Handle both list and dict formats
     if isinstance(tasks, dict):
         tasks = list(tasks.values())
-    
+
     for task in tasks:
         if limit and len(samples) >= limit:
             break
-        
+
         # Extract task description/instruction
         instruction = task.get("instruction", task.get("description", ""))
         task_id = task.get("id", task.get("task_id", str(len(samples))))
-        
+
         if not instruction:
             continue
-        
-        # Create a simple sample with the task instruction
+
+        # Create messages and assistant_raw
+        messages = [{"role": "user", "content": instruction}]
+        assistant_raw = f"I'll help you with that request regarding {domain} services."
+
+        # Generate deterministic ID
+        content_hash_input = json.dumps({
+            "messages": messages,
+            "assistant_raw": assistant_raw,
+            "domain": domain,
+            "task_id": task_id,
+        }, sort_keys=True)
+        sample_id = generate_sample_id("tau2", "retain", content_hash_input)
+
+        # Canonical schema
         sample = {
-            "messages": [
-                {"role": "user", "content": instruction}
-            ],
-            "assistant_raw": f"I'll help you with that request regarding {domain} services.",
+            "id": sample_id,
+            "messages": messages,
+            "assistant_raw": assistant_raw,
+            "tools": None,  # No tool calls in task samples
+
+            # Labels for loss masking & filtering
             "labels": {
+                "split": "retain",
                 "domain": domain,
                 "task_id": task_id,
-                "has_tool_calls": False,
             },
+
+            # Training controls
+            "training": {
+                "priority_class": "tool_capability",
+                "sample_weight": 1.0,
+            },
+
+            # Provenance metadata
             "metadata": {
-                "split": "retain",
                 "source": "tau2_task",
                 "domain": domain,
                 "task_id": task_id,
                 "has_tool_calls": False,
+                "schema_version": "stage2_v1",
+                "created_at": timestamp,
+                "pipeline_version": "stage2_v1",
             },
         }
         samples.append(sample)
-    
+
     return samples
 
 
@@ -268,9 +332,13 @@ def main():
     )
     
     args = parser.parse_args()
-    
+
+    # Create timestamp once for all samples
+    from datetime import datetime, timezone
+    timestamp = datetime.now(timezone.utc).isoformat()
+
     all_samples = []
-    
+
     # Try multiple possible paths for TAU2 data
     possible_data_paths = [
         args.tau2_path / "data/tau2/domains",
@@ -278,27 +346,58 @@ def main():
         args.tau2_path / "domains",
         args.tau2_path,
     ]
-    
+
     data_path = None
     for path in possible_data_paths:
         if path.exists():
             data_path = path
             break
-    
+
     if data_path is None:
         logger.warning(f"TAU2 data path not found. Tried: {possible_data_paths}")
         logger.info("Creating minimal placeholder samples...")
-        
-        # Create placeholder samples for demonstration
+
+        # Create placeholder samples with canonical schema
         for domain in args.domains:
             for i in range(min(50, args.target_n // len(args.domains))):
+                messages = [
+                    {"role": "user", "content": f"I need help with my {domain} service request #{i+1}."}
+                ]
+                assistant_raw = f"I'll be happy to help you with your {domain} inquiry. Let me look into that for you."
+
+                # Generate deterministic ID
+                content_hash_input = json.dumps({
+                    "messages": messages,
+                    "assistant_raw": assistant_raw,
+                    "domain": domain,
+                    "index": i,
+                }, sort_keys=True)
+                sample_id = generate_sample_id("tau2", "retain", content_hash_input)
+
                 sample = {
-                    "messages": [
-                        {"role": "user", "content": f"I need help with my {domain} service request #{i+1}."}
-                    ],
-                    "assistant_raw": f"I'll be happy to help you with your {domain} inquiry. Let me look into that for you.",
-                    "labels": {"domain": domain, "has_tool_calls": False},
-                    "metadata": {"split": "retain", "source": "tau2_placeholder", "domain": domain, "has_tool_calls": False},
+                    "id": sample_id,
+                    "messages": messages,
+                    "assistant_raw": assistant_raw,
+                    "tools": None,
+
+                    "labels": {
+                        "split": "retain",
+                        "domain": domain,
+                    },
+
+                    "training": {
+                        "priority_class": "tool_capability",
+                        "sample_weight": 1.0,
+                    },
+
+                    "metadata": {
+                        "source": "tau2_placeholder",
+                        "domain": domain,
+                        "has_tool_calls": False,
+                        "schema_version": "stage2_v1",
+                        "created_at": timestamp,
+                        "pipeline_version": "stage2_v1",
+                    },
                 }
                 all_samples.append(sample)
         
@@ -320,17 +419,17 @@ def main():
             results_path = args.tau2_path / f"data/tau2/results/final/{domain}"
             if results_path.exists():
                 samples = load_tau2_traces_from_results(
-                    results_path, domain, samples_per_domain
+                    results_path, domain, timestamp, samples_per_domain
                 )
                 logger.info(f"  Loaded {len(samples)} from results")
                 all_samples.extend(samples)
-            
+
             # Also try tasks file
             tasks_path = domain_path / "tasks.json"
             if tasks_path.exists() and len(all_samples) < args.target_n:
                 remaining = args.target_n - len(all_samples)
                 samples = load_tau2_tasks_as_samples(
-                    tasks_path, domain, remaining // len(args.domains)
+                    tasks_path, domain, timestamp, remaining // len(args.domains)
                 )
                 logger.info(f"  Loaded {len(samples)} from tasks")
                 all_samples.extend(samples)

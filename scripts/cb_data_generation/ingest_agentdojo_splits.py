@@ -21,9 +21,11 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import logging
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -34,6 +36,16 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parents[2]
+
+
+# =============================================================================
+# ID Generation (per canonical schema)
+# =============================================================================
+
+def generate_sample_id(source: str, split: str, content_hash_input: str) -> str:
+    """Generate deterministic, collision-resistant ID per 01_DATA_SPEC.md."""
+    content_hash = hashlib.sha256(content_hash_input.encode()).hexdigest()[:8]
+    return f"{source}_{split}_{content_hash}"
 
 
 # =============================================================================
@@ -162,73 +174,112 @@ def process_agentdojo_records(
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Process AgentDojo records and split by security outcome.
-    
+
+    Outputs canonical schema per 01_DATA_SPEC.md:
+    - id: deterministic collision-resistant ID
+    - messages: conversation context
+    - assistant_raw: Llama 3.1 format tool call
+    - tools: "agentdojo_native" (reference to AgentDojo's tool definitions)
+    - labels: split, security, observed_tool, etc.
+    - training: priority_class for weighted sampling
+    - metadata: provenance info
+
     Returns:
         Tuple of (harmful_samples, retain_samples)
     """
     harmful = []
     retain = []
-    
+    timestamp = datetime.now(timezone.utc).isoformat()
+
     for record in records:
-        metadata = record.get("metadata", {})
+        record_metadata = record.get("metadata", {})
         messages = record.get("messages", [])
-        
+
         # Skip records without injection (pure benign traces)
-        injection_task_id = metadata.get("injection_task_id")
+        injection_task_id = record_metadata.get("injection_task_id")
         if injection_task_id is None:
             continue
-        
+
         # Get security outcome
-        security = metadata.get("security", True)
-        success = metadata.get("success", False)
-        
+        security = record_metadata.get("security", True)
+        success = record_metadata.get("success", False)
+
         # Extract assistant content
         assistant_raw = extract_last_assistant_content(messages)
         if not assistant_raw:
             continue
-        
+
         # Extract tool name for labels
         observed_tool = extract_tool_name_from_assistant(messages)
-        
+
         # Convert messages to standard format
         context_messages = convert_messages_to_standard_format(messages)
         if not context_messages:
             continue
-        
+
         # Determine if this has tool calls
         has_tool_calls = "<|python_tag|>" in assistant_raw
-        
-        # Create sample
-        sample = {
+
+        # Determine split and priority_class
+        if security == False:
+            split = "harmful"
+            priority_class = "agentdojo_failure"
+        else:
+            split = "retain"
+            priority_class = "injection_resisted"
+
+        # Generate deterministic ID
+        content_hash_input = json.dumps({
             "messages": context_messages,
             "assistant_raw": assistant_raw,
+            "injection_task_id": injection_task_id,
+        }, sort_keys=True)
+        sample_id = generate_sample_id("agentdojo", split, content_hash_input)
+
+        # Create sample with canonical schema
+        sample = {
+            "id": sample_id,
+            "messages": context_messages,
+            "assistant_raw": assistant_raw,
+            "tools": "agentdojo_native",  # Reference to AgentDojo tool definitions
+
+            # Labels for loss masking & filtering
             "labels": {
+                "split": split,
                 "security": security,
                 "success": success,
                 "observed_tool": observed_tool,
                 "injection_task_id": injection_task_id,
+                "is_adversarial_safe": security == True,  # True if resisted
             },
+
+            # Training controls
+            "training": {
+                "priority_class": priority_class,
+                "sample_weight": 1.5 if split == "retain" else 1.0,  # Higher weight for resisted
+            },
+
+            # Provenance metadata
             "metadata": {
                 "source": "agentdojo",
                 "source_file": source_file,
-                "suite_name": metadata.get("suite_name", ""),
-                "user_task_id": metadata.get("user_task_id", ""),
-                "attack_type": metadata.get("attack_type", ""),
-                "model": metadata.get("model", ""),
+                "suite_name": record_metadata.get("suite_name", ""),
+                "user_task_id": record_metadata.get("user_task_id", ""),
+                "attack_type": record_metadata.get("attack_type", ""),
+                "model": record_metadata.get("model", ""),
                 "has_tool_calls": has_tool_calls,
+                "schema_version": "stage2_v1",
+                "created_at": timestamp,
+                "pipeline_version": "stage2_v1",
             },
         }
-        
+
         # Split by security outcome
-        if security == False:
-            # Attack SUCCEEDED - goes to Ds (harmful)
-            sample["metadata"]["split"] = "harmful"
+        if split == "harmful":
             harmful.append(sample)
         else:
-            # Model RESISTED attack - goes to Dr (retain)
-            sample["metadata"]["split"] = "retain"
             retain.append(sample)
-    
+
     return harmful, retain
 
 
