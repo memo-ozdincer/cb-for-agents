@@ -3,7 +3,7 @@
 #SBATCH --job-name=probe_agentdojo_ingest
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=4
-#SBATCH --time=00:10:00
+#SBATCH --time=00:16:00
 #SBATCH --output=/scratch/memoozd/logs/%x_%j.out
 #SBATCH --error=/scratch/memoozd/logs/%x_%j.err
 
