@@ -18,7 +18,7 @@
 # - Outputs in Llama 3.1 tool-calling format
 #
 # Submit from $SCRATCH:
-#   cd /scratch/memoozd/rrfa
+#   cd /scratch/memoozd/harmful-agents-meta-dataset
 #   sbatch slurm/01_generate_ds.sbatch
 #
 # =============================================================================
@@ -27,7 +27,7 @@ set -euo pipefail
 
 PROJECT_DIR="/project/def-zhijing/memoozd"
 CB_SCRATCH="/scratch/memoozd/cb-scratch"
-REPO_DIR="$PROJECT_DIR/rrfa"
+REPO_DIR="$PROJECT_DIR/harmful-agents-meta-dataset"
 VENV_DIR="$PROJECT_DIR/.venvs/cb_env"
 
 cd "$REPO_DIR"
@@ -77,7 +77,7 @@ mkdir -p "$DATA_DIR"
 python src/data_generation/generate_ds_mvp.py \
     --b4-data data/fujitsu/orchestrator_attacks_combined_deduplicated.jsonl \
     --tool-schema configs/tool_schemas/b4_standard_v1.json \
-    --model mlabonne/Meta-Llama-3.1-8B-Instruct-abliterated \
+    --model mlabonne/Meta-Llama-3.1-8B-Instruct \
     --backend vllm \
     --tensor-parallel 4 \
     --batch-size 64 \

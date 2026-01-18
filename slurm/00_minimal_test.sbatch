@@ -103,7 +103,7 @@ echo "========================================"
 python src/data_generation/generate_ds_mvp.py \
     --b4-data "$B4_DATA" \
     --tool-schema "$TOOL_SCHEMA" \
-    --model mlabonne/Meta-Llama-3.1-8B-Instruct-abliterated \
+    --model mlabonne/Meta-Llama-3.1-8B-Instruct \
     --backend vllm \
     --tensor-parallel 1 \
     --batch-size 16 \
