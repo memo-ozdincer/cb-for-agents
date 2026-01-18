@@ -45,6 +45,7 @@ if os.path.exists(cache_root):
     os.makedirs(os.path.join(cache_root, "xdg_cache"), exist_ok=True)
     os.environ.setdefault("XDG_CACHE_HOME", os.path.join(cache_root, "xdg_cache"))
 import sys
+import multiprocessing as mp
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -107,6 +108,12 @@ def resolve_local_model_path(model_id: str, hf_token: Optional[str] = None) -> s
         return model_id
 
 
+def _resolve_device_map(device: str):
+    if device == "auto":
+        return "auto"
+    return {"": device}
+
+
 def load_model_and_tokenizer(
     model_path: str,
     adapter_path: Optional[str] = None,
@@ -143,10 +150,11 @@ def load_model_and_tokenizer(
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
+    device_map = _resolve_device_map(device)
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
         torch_dtype=torch_dtype,
-        device_map=device,
+        device_map=device_map,
         trust_remote_code=True,
         token=hf_token,
         local_files_only=offline_mode,
@@ -200,6 +208,149 @@ def load_model_and_tokenizer(
     
     model.eval()
     return model, tokenizer
+
+
+def _split_list(items: List[Any], num_chunks: int) -> List[List[Any]]:
+    if num_chunks <= 1:
+        return [items]
+    chunks = [[] for _ in range(num_chunks)]
+    for idx, item in enumerate(items):
+        chunks[idx % num_chunks].append(item)
+    return chunks
+
+
+def _merge_tool_flip_results(partials: List[Dict[str, Any]]) -> Dict[str, Any]:
+    merged_details = []
+    totals = {
+        "attack_successes": 0,
+        "correct_behaviors": 0,
+        "no_tool_calls": 0,
+        "valid_json_count": 0,
+        "total_samples": 0,
+        "filtered_out_samples": 0,
+    }
+    for part in partials:
+        for key in totals:
+            totals[key] += part.get(key, 0)
+        merged_details.extend(part.get("details", []))
+
+    total = totals["total_samples"]
+    asr = totals["attack_successes"] / total if total > 0 else 0
+    correct_rate = totals["correct_behaviors"] / total if total > 0 else 0
+    no_tool_rate = totals["no_tool_calls"] / total if total > 0 else 0
+    valid_json_rate = totals["valid_json_count"] / total if total > 0 else 0
+
+    return {
+        "attack_success_rate": asr,
+        "correct_behavior_rate": correct_rate,
+        "no_tool_call_rate": no_tool_rate,
+        "valid_json_rate": valid_json_rate,
+        "total_samples": total,
+        "filtered_out_samples": totals["filtered_out_samples"],
+        "attack_successes": totals["attack_successes"],
+        "correct_behaviors": totals["correct_behaviors"],
+        "no_tool_calls": totals["no_tool_calls"],
+        "valid_json_count": totals["valid_json_count"],
+        "details": merged_details,
+    }
+
+
+def _merge_forced_call_results(partials: List[Dict[str, Any]]) -> Dict[str, Any]:
+    merged_details = []
+    total_samples = 0
+    forced_successes = 0
+    for part in partials:
+        total_samples += part.get("total_samples", 0)
+        forced_successes += part.get("forced_successes", 0)
+        merged_details.extend(part.get("details", []))
+    forced_asr = forced_successes / total_samples if total_samples > 0 else 0
+    return {
+        "forced_call_asr": forced_asr,
+        "total_samples": total_samples,
+        "forced_successes": forced_successes,
+        "details": merged_details,
+    }
+
+
+def _merge_capability_results(partials: List[Dict[str, Any]]) -> Dict[str, Any]:
+    merged_details = []
+    total_samples = 0
+    correct_calls = 0
+    for part in partials:
+        total_samples += part.get("total_samples", 0)
+        correct_calls += part.get("correct_calls", 0)
+        merged_details.extend(part.get("details", []))
+    retention_rate = correct_calls / total_samples if total_samples > 0 else 0
+    return {
+        "capability_retention": retention_rate,
+        "total_samples": total_samples,
+        "correct_calls": correct_calls,
+        "details": merged_details,
+    }
+
+
+def _evaluate_model_on_samples(
+    model_path: str,
+    adapter_path: Optional[str],
+    eval_samples: List[Dict[str, Any]],
+    tools: List[Dict[str, Any]],
+    system_prompt: str,
+    device: str,
+    torch_dtype: torch.dtype,
+    verbose: bool,
+) -> Dict[str, Any]:
+    if device.startswith("cuda") and torch.cuda.is_available():
+        try:
+            torch.cuda.set_device(device)
+        except Exception:
+            pass
+
+    model, tokenizer = load_model_and_tokenizer(
+        model_path, adapter_path=adapter_path, device=device, torch_dtype=torch_dtype
+    )
+
+    tool_flip = evaluate_tool_flip_asr(
+        model, tokenizer, eval_samples, tools, system_prompt, verbose
+    )
+    forced_call = evaluate_forced_function_call(
+        model, tokenizer, eval_samples, tools, system_prompt, verbose
+    )
+    capability = evaluate_capability_retention(
+        model, tokenizer, eval_samples, tools, system_prompt, verbose
+    )
+
+    del model
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    return {
+        "tool_flip_asr": tool_flip,
+        "forced_function_call": forced_call,
+        "capability_retention": capability,
+    }
+
+
+def _worker_eval(payload: Tuple[Any, ...]) -> Dict[str, Any]:
+    (
+        model_path,
+        adapter_path,
+        eval_samples,
+        tools,
+        system_prompt,
+        device,
+        torch_dtype,
+        verbose,
+    ) = payload
+    return _evaluate_model_on_samples(
+        model_path=model_path,
+        adapter_path=adapter_path,
+        eval_samples=eval_samples,
+        tools=tools,
+        system_prompt=system_prompt,
+        device=device,
+        torch_dtype=torch_dtype,
+        verbose=verbose,
+    )
 
 
 # =============================================================================
@@ -768,6 +919,35 @@ def compare_outputs(
     }
 
 
+def build_paired_outputs(
+    baseline_results: Dict[str, Any],
+    cb_results: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Pair baseline vs CB outputs for direct comparison."""
+    baseline_details = baseline_results.get("details", [])
+    cb_details = cb_results.get("details", [])
+
+    cb_by_id = {d.get("id"): d for d in cb_details}
+    paired = []
+    for b in baseline_details:
+        b_id = b.get("id")
+        c = cb_by_id.get(b_id)
+        if c is None:
+            continue
+        paired.append({
+            "id": b_id,
+            "expected_tool": b.get("expected_tool"),
+            "simulated_tool": b.get("simulated_tool"),
+            "baseline_observed_tool": b.get("observed_tool"),
+            "cb_observed_tool": c.get("observed_tool"),
+            "baseline_outcome": b.get("outcome"),
+            "cb_outcome": c.get("outcome"),
+            "baseline_response": b.get("response_full") or b.get("response_preview"),
+            "cb_response": c.get("response_full") or c.get("response_preview"),
+        })
+    return paired
+
+
 # =============================================================================
 # Main Evaluation
 # =============================================================================
@@ -781,6 +961,9 @@ def run_mvp_evaluation(
     device: str = "auto",
     torch_dtype: torch.dtype = torch.bfloat16,
     verbose: bool = True,
+    num_workers: int = 1,
+    gpu_ids: Optional[List[int]] = None,
+    eval_samples: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """
     Run full MVP evaluation suite.
@@ -804,11 +987,12 @@ def run_mvp_evaluation(
     system_prompt = get_system_prompt(schema)
     
     # Load eval data
-    eval_samples = []
-    with open(eval_data_path, "r", encoding="utf-8") as f:
-        for line in f:
-            if line.strip():
-                eval_samples.append(json.loads(line))
+    if eval_samples is None:
+        eval_samples = []
+        with open(eval_data_path, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    eval_samples.append(json.loads(line))
     
     logger.info(f"Loaded {len(eval_samples)} evaluation samples")
     
@@ -819,36 +1003,68 @@ def run_mvp_evaluation(
         "num_samples": len(eval_samples),
     }
     
+    def _evaluate_with_workers(model_path: str, adapter_path: Optional[str]) -> Dict[str, Any]:
+        if num_workers <= 1:
+            return _evaluate_model_on_samples(
+                model_path=model_path,
+                adapter_path=adapter_path,
+                eval_samples=eval_samples,
+                tools=tools,
+                system_prompt=system_prompt,
+                device=device,
+                torch_dtype=torch_dtype,
+                verbose=verbose,
+            )
+
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA is required for multi-worker evaluation")
+
+        worker_gpu_ids = gpu_ids or list(range(num_workers))
+        if len(worker_gpu_ids) < num_workers:
+            raise ValueError("gpu_ids must have at least num_workers entries")
+
+        chunks = _split_list(eval_samples, num_workers)
+        payloads = []
+        for idx in range(num_workers):
+            payloads.append(
+                (
+                    model_path,
+                    adapter_path,
+                    chunks[idx],
+                    tools,
+                    system_prompt,
+                    f"cuda:{worker_gpu_ids[idx]}",
+                    torch_dtype,
+                    False,
+                )
+            )
+
+        ctx = mp.get_context("spawn")
+        with ctx.Pool(processes=num_workers) as pool:
+            partials = pool.map(_worker_eval, payloads)
+
+        tool_flip = _merge_tool_flip_results([p["tool_flip_asr"] for p in partials])
+        forced_call = _merge_forced_call_results([p["forced_function_call"] for p in partials])
+        capability = _merge_capability_results([p["capability_retention"] for p in partials])
+
+        return {
+            "tool_flip_asr": tool_flip,
+            "forced_function_call": forced_call,
+            "capability_retention": capability,
+        }
+
     # Evaluate baseline (if provided)
     if baseline_model_path:
         logger.info("\n" + "=" * 60)
         logger.info("EVALUATING BASELINE MODEL")
         logger.info("=" * 60)
-        
-        baseline_model, baseline_tokenizer = load_model_and_tokenizer(
-            baseline_model_path, device=device, torch_dtype=torch_dtype
-        )
-        
-        baseline_asr = evaluate_tool_flip_asr(
-            baseline_model, baseline_tokenizer, eval_samples, tools, system_prompt, verbose
-        )
-        baseline_forced = evaluate_forced_function_call(
-            baseline_model, baseline_tokenizer, eval_samples, tools, system_prompt, verbose
-        )
-        baseline_capability = evaluate_capability_retention(
-            baseline_model, baseline_tokenizer, eval_samples, tools, system_prompt, verbose
-        )
-        
+
+        baseline_metrics = _evaluate_with_workers(baseline_model_path, None)
+
         results["baseline"] = {
             "model": baseline_model_path,
-            "tool_flip_asr": baseline_asr,
-            "forced_function_call": baseline_forced,
-            "capability_retention": baseline_capability,
+            **baseline_metrics,
         }
-        
-        # Clean up
-        del baseline_model
-        torch.cuda.empty_cache()
     
     # Evaluate CB model
     if cb_model_path or cb_adapter_path:
@@ -861,31 +1077,13 @@ def run_mvp_evaluation(
         if not base_model:
             raise ValueError("Must provide either --cb-model or --baseline")
         
-        cb_model, cb_tokenizer = load_model_and_tokenizer(
-            base_model, adapter_path=cb_adapter_path, device=device, torch_dtype=torch_dtype
-        )
-        
-        cb_asr = evaluate_tool_flip_asr(
-            cb_model, cb_tokenizer, eval_samples, tools, system_prompt, verbose
-        )
-        cb_forced = evaluate_forced_function_call(
-            cb_model, cb_tokenizer, eval_samples, tools, system_prompt, verbose
-        )
-        cb_capability = evaluate_capability_retention(
-            cb_model, cb_tokenizer, eval_samples, tools, system_prompt, verbose
-        )
-        
+        cb_metrics = _evaluate_with_workers(base_model, cb_adapter_path)
+
         results["cb_model"] = {
             "model": base_model,
             "adapter": cb_adapter_path,
-            "tool_flip_asr": cb_asr,
-            "forced_function_call": cb_forced,
-            "capability_retention": cb_capability,
+            **cb_metrics,
         }
-        
-        # Clean up
-        del cb_model
-        torch.cuda.empty_cache()
     
     # Compute deltas and summary
     if "baseline" in results and "cb_model" in results:
@@ -1030,6 +1228,18 @@ def main():
         help="Device to use",
     )
     parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=1,
+        help="Number of parallel workers (one model replica per GPU)",
+    )
+    parser.add_argument(
+        "--gpu-ids",
+        type=str,
+        default=None,
+        help="Comma-separated GPU ids to use for parallel workers (e.g., 0,1,2,3)",
+    )
+    parser.add_argument(
         "--dtype",
         type=str,
         choices=["bfloat16", "float16", "float32"],
@@ -1098,6 +1308,11 @@ def main():
         "float32": torch.float32,
     }
     
+    # Resolve GPU IDs
+    gpu_ids = None
+    if args.gpu_ids:
+        gpu_ids = [int(x) for x in args.gpu_ids.split(",") if x.strip() != ""]
+
     # Run evaluation
     results = run_mvp_evaluation(
         baseline_model_path=args.baseline,
@@ -1108,6 +1323,9 @@ def main():
         device=args.device,
         torch_dtype=dtype_map[args.dtype],
         verbose=not args.quiet,
+        num_workers=args.num_workers,
+        gpu_ids=gpu_ids,
+        eval_samples=eval_samples,
     )
     
     # Clean up temp file
@@ -1148,6 +1366,18 @@ def main():
                                 record = {"model": key, "metric": metric_key, **detail}
                                 f.write(json.dumps(record, default=str) + "\n")
         logger.info(f"Detailed outputs saved to {details_path}")
+
+        # Save paired baseline vs CB outputs for direct comparison
+        if "baseline" in results and "cb_model" in results:
+            paired_path = args.output.with_suffix('.paired_outputs.jsonl')
+            paired = build_paired_outputs(
+                results["baseline"]["tool_flip_asr"],
+                results["cb_model"]["tool_flip_asr"],
+            )
+            with open(paired_path, "w", encoding="utf-8") as f:
+                for record in paired:
+                    f.write(json.dumps(record, default=str) + "\n")
+            logger.info(f"Paired outputs saved to {paired_path}")
     
     # Exit code
     if args.fail_on_gate and not results.get("stage1_passed", True):

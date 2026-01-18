@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=mvp_eval
 #SBATCH --nodes=1
-#SBATCH --gpus-per-node=1
+#SBATCH --gpus-per-node=4
 #SBATCH --time=02:00:00
 #SBATCH --output=/scratch/memoozd/cb-scratch/logs/%x_%j.out
 #SBATCH --error=/scratch/memoozd/cb-scratch/logs/%x_%j.err
@@ -89,6 +89,8 @@ python src/evaluation/eval_mvp.py \
     --eval-data "$EVAL_DATA" \
     --tool-schema "$TOOL_SCHEMA" \
     --device auto \
+    --num-workers 4 \
+    --gpu-ids 0,1,2,3 \
     --dtype bfloat16 \
     --output "$EVAL_DIR/results_${SLURM_JOB_ID}.json" \
     --fail-on-gate
