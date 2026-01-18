@@ -161,27 +161,3 @@ python src/evaluation/sanity_check.py \
     --fail-on-error
 
 echo "✓ Sanity check passed"
-
-# =============================================================================
-# SUCCESS!
-# =============================================================================
-echo ""
-echo "========================================"
-echo "✓✓✓ FULL PIPELINE COMPLETE ✓✓✓"
-echo "========================================"
-echo ""
-echo "Run directory: $RUN_DIR"
-echo "Adapter saved to: $OUTPUT_DIR/final"
-echo "Training data: $COMBINED_FILE"
-echo ""
-echo "Hyperparameters used:"
-echo "  alpha_max: 0.5 (conservative)"
-echo "  cb_target_layers: [15] (single mid-layer)"
-echo "  total_steps: 300"
-echo "  learning_rate: 3e-5"
-echo ""
-
-# Create symlink to latest run
-ln -sfn "$RUN_DIR" "$CB_SCRATCH/runs/latest"
-echo "Latest run symlink: $CB_SCRATCH/runs/latest"
-echo ""

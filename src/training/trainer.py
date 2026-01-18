@@ -1179,6 +1179,17 @@ class CircuitBreakerTrainer:
             self.accelerator.prepare(
                 self.model, self.optimizer, self.dataloader, self.scheduler
             )
+        
+        # CRITICAL FIX for DDP: We run 4 forward passes per training step
+        # (harmful trainable, harmful frozen, benign trainable, benign frozen)
+        # with the same LoRA parameters. DDP by default expects parameters to be
+        # used only once per backward pass. _set_static_graph() tells DDP that
+        # our graph structure is static and it should not track parameter usage.
+        if self.accelerator.num_processes > 1:
+            unwrapped_model = self.accelerator.unwrap_model(self.model)
+            if hasattr(unwrapped_model, '_set_static_graph'):
+                unwrapped_model._set_static_graph()
+                self.accelerator.print("✓ Set static graph for DDP (multi-GPU training)")
     
     def _setup_extractors(self):
         """Setup representation extractors.
