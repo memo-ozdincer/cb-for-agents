@@ -1,9 +1,1 @@
 data/fujitsu/*.jsonl filter=lfs diff=lfs merge=lfs -text
-data/db/*.db filter=lfs diff=lfs merge=lfs -text
-data/circuit_breakers/**/*.jsonl filter=lfs diff=lfs merge=lfs -text
-data/circuit_breakers/**/*.bak filter=lfs diff=lfs merge=lfs -text
-data/circuit_breakers/*.jsonl filter=lfs diff=lfs merge=lfs -text
-data/circuit_breakers/*.json filter=lfs diff=lfs merge=lfs -text
-data/circuit_breakers/**/*.json filter=lfs diff=lfs merge=lfs -text
-logs/*.out filter=lfs diff=lfs merge=lfs -text
-logs/*.err filter=lfs diff=lfs merge=lfs -text
