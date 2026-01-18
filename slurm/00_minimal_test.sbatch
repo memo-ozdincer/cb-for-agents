@@ -129,7 +129,7 @@ python src/data_generation/generate_dr_mvp.py \
     --tool-schema "$TOOL_SCHEMA" \
     --model "$BASE_MODEL" \
     --output "$DR_FILE" \
-    --tensor-parallel1 \
+    --tensor-parallel 1 \
     --batch-size 4
 
 if [[ ! -f "$DR_FILE" ]]; then
