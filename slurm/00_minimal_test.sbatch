@@ -97,7 +97,7 @@ OUTPUT_DIR="$TEST_DIR/adapter"
 # =============================================================================
 echo ""
 echo "========================================"
-echo "STAGE 1: Generating Ds (limit=10)"
+echo "STAGE 1: Generating Ds (limit=50)"
 echo "========================================"
 
 python src/data_generation/generate_ds_mvp.py \
@@ -110,7 +110,7 @@ python src/data_generation/generate_ds_mvp.py \
     --dtype bfloat16 \
     --temperature 0.7 \
     --min-yield 0.0 \
-    --limit 10 \
+    --limit 50 \
     --output "$DS_FILE" \
     --output-ids "$TEST_DIR/ds_test_ids.txt"
 
@@ -207,8 +207,14 @@ echo "========================================"
 echo "STAGE 5: Validating Format"
 echo "========================================"
 
+if [[ $BATCH_COUNT -eq 0 ]]; then
+    echo "⚠ Skipping validation (0 batches)"
+    echo "ERROR: No training data generated - abliterated model may not be producing valid tool calls"
+    exit 1
+fi
+
 python src/data_generation/validate_format.py \
-    --input "$FORMATTED_FILE" \
+    --data "$FORMATTED_FILE" \
     --strict
 
 echo "✓ Validation passed"
