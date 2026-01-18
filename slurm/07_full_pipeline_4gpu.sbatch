@@ -242,7 +242,6 @@ accelerate launch --num_processes 1 \
     --batch-size 4 \
     --gradient-accumulation-steps 4 \
     --learning-rate 3e-5 \
-    --max-grad-norm 0.5 \
     --lora-r 16 \
     --lora-alpha 32 \
     --cb-target-layers 15 \
@@ -287,7 +286,6 @@ echo ""
 echo "Hyperparameters used:"
 echo "  alpha_max: 0.5 (conservative)"
 echo "  cb_target_layers: [15] (single mid-layer)"
-echo "  max_grad_norm: 0.5"
 echo "  total_steps: 300"
 echo "  learning_rate: 3e-5"
 echo ""
