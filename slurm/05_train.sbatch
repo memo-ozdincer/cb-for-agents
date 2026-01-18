@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=mvp_train
 #SBATCH --nodes=1
-#SBATCH --gpus-per-node=1
+#SBATCH --gpus-per-node=4
 #SBATCH --time=03:00:00
 #SBATCH --output=/scratch/memoozd/cb-scratch/logs/%x_%j.out
 #SBATCH --error=/scratch/memoozd/cb-scratch/logs/%x_%j.err
@@ -111,33 +111,77 @@ COMBINED_FILE="$FIXED_FILE"
 MODEL_PATH=$(python -c "from huggingface_hub import snapshot_download; print(snapshot_download(repo_id='$BASE_MODEL', local_files_only=True))")
 BASE_MODEL="$MODEL_PATH"
 
-# Run Training
-accelerate launch --num_processes ${SLURM_GPUS_ON_NODE:-1} \
+# =============================================================================
+# STAGE 6: TRAINING - Conservative Hyperparameters
+# =============================================================================
+echo ""
+echo "========================================"
+echo "STAGE 6: Training (300 steps, 4 GPUs)"
+echo "========================================"
+
+# Run training with conservative hyperparameters
+accelerate launch --num_processes ${SLURM_GPUS_ON_NODE:-4} \
     src/training/train.py \
     --preset llama-3.1-8b-instruct \
     --base-model "$BASE_MODEL" \
     --data-path "$COMBINED_FILE" \
     --output-dir "$OUTPUT_DIR" \
     --loss-weighting dual \
-    --alpha-max 10.0 \
+    --alpha-max 0.5 \
     --alpha-decay-multiplier 2.0 \
-    --total-steps 500 \
+    --total-steps 300 \
     --batch-size 4 \
     --gradient-accumulation-steps 4 \
-    --learning-rate 5e-5 \
+    --learning-rate 3e-5 \
     --lora-r 16 \
     --lora-alpha 32 \
-    --cb-target-layers 10 20 \
-    --wandb-project "circuit-breakers-mvp" \
-    --wandb-run-name "cb_mvp_stage1_${SLURM_JOB_ID}"
+    --cb-target-layers 15 \
+    --wandb-project "circuit-breakers" \
+    --wandb-run-name "cb_full_4gpu_${SLURM_JOB_ID}"
 
-# Post-Training Sanity Check
+if [[ ! -d "$OUTPUT_DIR" ]]; then
+    echo "ERROR: Training failed - no output directory"
+    exit 1
+fi
+
+echo "✓ Training completed"
+
+# =============================================================================
+# STAGE 7: Sanity Check
+# =============================================================================
+echo ""
+echo "========================================"
+echo "STAGE 7: Sanity Check"
+echo "========================================"
+
 python src/evaluation/sanity_check.py \
-    --base-model "$BASE_MODEL" \
+    --base-model "$MODEL_PATH" \
     --adapter-path "$OUTPUT_DIR/final" \
     --epsilon 1e-4 \
     --fail-on-error
 
-ln -sfn "$RUN_DIR" "$CB_SCRATCH/runs/latest"
+echo "✓ Sanity check passed"
 
-echo "Training complete! Adapter: $OUTPUT_DIR"
+# =============================================================================
+# SUCCESS!
+# =============================================================================
+echo ""
+echo "========================================"
+echo "✓✓✓ FULL PIPELINE COMPLETE ✓✓✓"
+echo "========================================"
+echo ""
+echo "Run directory: $RUN_DIR"
+echo "Adapter saved to: $OUTPUT_DIR/final"
+echo "Training data: $COMBINED_FILE"
+echo ""
+echo "Hyperparameters used:"
+echo "  alpha_max: 0.5 (conservative)"
+echo "  cb_target_layers: [15] (single mid-layer)"
+echo "  total_steps: 300"
+echo "  learning_rate: 3e-5"
+echo ""
+
+# Create symlink to latest run
+ln -sfn "$RUN_DIR" "$CB_SCRATCH/runs/latest"
+echo "Latest run symlink: $CB_SCRATCH/runs/latest"
+echo ""
