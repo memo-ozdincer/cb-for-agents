@@ -103,7 +103,7 @@ python src/data_generation/generate_ds_mvp.py \
     --model "$BASE_MODEL" \
     --output "$DS_FILE" \
     --limit 10 \
-    --tensor-parallel1 \
+    --tensor-parallel 1 \
     --batch-size 4 \
     --min-yield 0.0
 
