@@ -1109,7 +1109,12 @@ class CircuitBreakerTrainer:
         )
 
         if self.config.gradient_checkpointing:
-            self.model.gradient_checkpointing_enable()
+            # use_reentrant=False fixes DDP + gradient checkpointing deadlock with shared LoRA params
+            # - Prevents "marked as ready twice" error (find_unused_parameters=True)
+            # - Prevents "did not receive grad" error (find_unused_parameters=False)
+            self.model.gradient_checkpointing_enable(
+                gradient_checkpointing_kwargs={"use_reentrant": False}
+            )
 
         # Setup LoRA
         lora_config = LoraConfig(
