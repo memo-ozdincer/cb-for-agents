@@ -44,7 +44,7 @@ from peft import (
     TaskType,
 )
 from accelerate import Accelerator
-from accelerate.utils import set_seed
+from accelerate.utils import set_seed, DistributedDataParallelKwargs
 
 from .config import CircuitBreakerConfig
 from .hf_utils import resolve_hf_token, resolve_local_model_path
@@ -966,10 +966,12 @@ class CircuitBreakerTrainer:
         if self.config.use_wandb and not wandb_is_available():
             self.config.use_wandb = False
 
+        ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
         self.accelerator = Accelerator(
             gradient_accumulation_steps=self.config.gradient_accumulation_steps,
             log_with="wandb" if self.config.use_wandb else None,
             project_dir=self.config.output_dir,
+            kwargs_handlers=[ddp_kwargs],
         )
         
         # Set seed for reproducibility
@@ -1192,12 +1194,12 @@ class CircuitBreakerTrainer:
                 self.model, self.optimizer, self.dataloader, self.scheduler
             )
         
-        # CRITICAL FIX for DDP: We run 4 forward passes per training step
-        # (harmful trainable, harmful frozen, benign trainable, benign frozen)
-        # with the same LoRA parameters. DDP by default expects parameters to be
-        # used only once per backward pass. _set_static_graph() tells DDP that
-        # our graph structure is static and it should not track parameter usage.
-        if self.accelerator.num_processes > 1 and hasattr(self.model, '_set_static_graph'):
+        # Optional: only enable static graph if explicitly requested.
+        if (
+            getattr(self.config, "ddp_static_graph", False)
+            and self.accelerator.num_processes > 1
+            and hasattr(self.model, "_set_static_graph")
+        ):
             self.model._set_static_graph()
             self.accelerator.print("✓ Set static graph for DDP (multi-GPU training)")
 
