@@ -71,6 +71,9 @@ export FLASHINFER_WORKSPACE_DIR="$CACHE_DIR/flashinfer"
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export WANDB_MODE=offline
+export VLLM_NO_USAGE_STATS=1
+export DO_NOT_TRACK=1
+export VLLM_ATTENTION_BACKEND=FLASH_ATTN
 
 # =============================================================================
 # Configuration
@@ -100,12 +103,16 @@ echo "========================================"
 python src/data_generation/generate_ds_mvp.py \
     --b4-data "$B4_DATA" \
     --tool-schema "$TOOL_SCHEMA" \
-    --model "$BASE_MODEL" \
-    --output "$DS_FILE" \
-    --limit 10 \
+    --model mlabonne/Meta-Llama-3.1-8B-Instruct-abliterated \
+    --backend vllm \
     --tensor-parallel 1 \
-    --batch-size 4 \
-    --min-yield 0.0
+    --batch-size 16 \
+    --dtype bfloat16 \
+    --temperature 0.7 \
+    --min-yield 0.0 \
+    --limit 10 \
+    --output "$DS_FILE" \
+    --output-ids "$TEST_DIR/ds_test_ids.txt"
 
 if [[ ! -f "$DS_FILE" ]]; then
     echo "ERROR: Ds generation failed"
@@ -124,13 +131,15 @@ echo "STAGE 2: Generating Dr"
 echo "========================================"
 
 python src/data_generation/generate_dr_mvp.py \
-    --ds-file "$DS_FILE" \
-    --b4-data "$B4_DATA" \
+    --ds-data "$DS_FILE" \
     --tool-schema "$TOOL_SCHEMA" \
-    --model "$BASE_MODEL" \
-    --output "$DR_FILE" \
+    --model meta-llama/Llama-3.1-8B-Instruct \
+    --backend vllm \
     --tensor-parallel 1 \
-    --batch-size 4
+    --batch-size 16 \
+    --dtype bfloat16 \
+    --temperature 0.3 \
+    --output "$DR_FILE"
 
 if [[ ! -f "$DR_FILE" ]]; then
     echo "ERROR: Dr generation failed"
