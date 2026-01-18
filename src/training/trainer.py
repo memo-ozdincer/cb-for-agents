@@ -966,7 +966,9 @@ class CircuitBreakerTrainer:
         if self.config.use_wandb and not wandb_is_available():
             self.config.use_wandb = False
 
-        ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+        # CRITICAL FIX: find_unused_parameters=False to avoid DDP graph traversal issues
+        # With gradient checkpointing + LoRA, the traversal incorrectly sees params "ready twice"
+        ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=False)
         self.accelerator = Accelerator(
             gradient_accumulation_steps=self.config.gradient_accumulation_steps,
             log_with="wandb" if self.config.use_wandb else None,
@@ -1334,6 +1336,10 @@ class CircuitBreakerTrainer:
         benign_batch_size = benign_input_ids.shape[0]
 
         # === SINGLE FORWARD PASS: Concatenate harmful + benign ===
+        # DEBUG: Confirm this is the new DDP-safe code
+        if self.global_step == 0 and self.accelerator.is_main_process:
+            self.accelerator.print("✓ Using SINGLE FORWARD PASS (DDP-safe version)")
+
         combined_input_ids = torch.cat([harmful_input_ids, benign_input_ids], dim=0)
         combined_attention_mask = torch.cat([harmful_attention_mask, benign_attention_mask], dim=0)
 
