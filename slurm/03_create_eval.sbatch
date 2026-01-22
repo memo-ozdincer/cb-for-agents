@@ -2,7 +2,7 @@
 #SBATCH --job-name=mvp_eval_set
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=0
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=4
 #SBATCH --time=00:18:00
 #SBATCH --output=/scratch/memoozd/cb-scratch/logs/%x_%j.out
 #SBATCH --error=/scratch/memoozd/cb-scratch/logs/%x_%j.err
