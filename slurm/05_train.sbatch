@@ -120,3 +120,57 @@ python src/evaluation/sanity_check.py \
     --fail-on-error
 
 echo "✓ Sanity check passed"
+
+# =============================================================================
+# STAGE 8: Sample Output Comparison
+# =============================================================================
+echo ""
+echo "========================================"
+echo "STAGE 8: Sample Output Comparison"
+echo "========================================"
+
+# Run quick eval on 20 samples to show baseline vs CB outputs
+python src/evaluation/eval.py \
+    --baseline "$MODEL_PATH" \
+    --cb-adapter "$OUTPUT_DIR/final" \
+    --eval-data "$DATA_DIR/eval_stage1.jsonl" \
+    --tool-schema configs/tool_schemas/b4_standard_v1.json \
+    --device auto \
+    --dtype bfloat16 \
+    --limit 20 \
+    --output "$OUTPUT_DIR/sample_eval.json" \
+    --quiet
+
+# Print sample outputs
+if [[ -f "$OUTPUT_DIR/sample_eval.paired_outputs.jsonl" ]]; then
+    echo ""
+    echo "=== Sample Baseline vs CB Outputs (first 20) ==="
+    python -c "
+import json
+import sys
+
+with open('$OUTPUT_DIR/sample_eval.paired_outputs.jsonl', 'r') as f:
+    for idx, line in enumerate(f, 1):
+        if idx > 20:
+            break
+        record = json.loads(line)
+        print(f'\n--- Sample {idx} (ID: {record.get(\"id\", \"unknown\")}) ---')
+        print(f'Expected Tool: {record.get(\"expected_tool\", \"N/A\")}')
+        print(f'Simulated Tool: {record.get(\"simulated_tool\", \"N/A\")}')
+        print(f'Baseline Observed: {record.get(\"baseline_observed_tool\", \"N/A\")} ({record.get(\"baseline_outcome\", \"N/A\")})')
+        print(f'CB Observed: {record.get(\"cb_observed_tool\", \"N/A\")} ({record.get(\"cb_outcome\", \"N/A\")})')
+        
+        baseline_resp = record.get('baseline_response', '')
+        cb_resp = record.get('cb_response', '')
+        
+        print(f'\nBaseline Response (first 200 chars):')
+        print(f'  {baseline_resp[:200]}...' if len(baseline_resp) > 200 else f'  {baseline_resp}')
+        
+        print(f'\nCB Response (first 200 chars):')
+        print(f'  {cb_resp[:200]}...' if len(cb_resp) > 200 else f'  {cb_resp}')
+"
+    echo ""
+    echo "✓ Sample outputs displayed"
+else
+    echo "⚠️  No paired outputs file found"
+fi
