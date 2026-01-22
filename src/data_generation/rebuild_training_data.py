@@ -379,7 +379,11 @@ def rebuild_batch(
     default_system_prompt: str,
     tools_json: Optional[str],
     filter_tool_only: bool,
-) -> Tuple[Dict[str, Any], Dict[str, int]]:
+    collect_examples: bool = False,
+    n_filtered: int = 5,
+    n_rendered: int = 3,
+    n_failed: int = 5,
+) -> Tuple[Dict[str, Any], Dict[str, int], Dict[str, List[Dict[str, Any]]]]:
     """
     Rebuild a batch with proper Llama 3.1 format.
     
@@ -397,6 +401,15 @@ def rebuild_batch(
         "benign_has_tool_call": 0,
     }
     
+    examples = {
+        "filtered_harmful": [],
+        "filtered_benign": [],
+        "rendered_harmful": [],
+        "rendered_benign": [],
+        "failed_harmful": [],
+        "failed_benign": [],
+    } if collect_examples else None
+    
     new_batch = {
         "id": batch.get("id", "unknown"),
         "harmful": [],
@@ -409,6 +422,15 @@ def rebuild_batch(
         
         # Filter if requested
         if filter_tool_only and not is_tool_routing_sample(sample):
+            if collect_examples and len(examples["filtered_harmful"]) < n_filtered:
+                examples["filtered_harmful"].append({
+                    "id": sample.get("id", "unknown"),
+                    "batch_id": batch.get("id"),
+                    "reason": "not_tool_routing",
+                    "has_is_agentic": sample.get("is_agentic", False),
+                    "has_tool_calls": sample.get("has_tool_calls", False),
+                    "completion_preview": sample.get("harmful_completion", "")[:200],
+                })
             continue
         stats["harmful_tool_routing"] += 1
         
@@ -427,12 +449,38 @@ def rebuild_batch(
             stats["harmful_rendered"] += 1
             if has_tool_call:
                 stats["harmful_has_tool_call"] += 1
+            
+            if collect_examples and len(examples["rendered_harmful"]) < n_rendered:
+                examples["rendered_harmful"].append({
+                    "id": sample.get("id", "unknown"),
+                    "batch_id": batch.get("id"),
+                    "has_tool_call": has_tool_call,
+                    "text_preview": text[:300],
+                    "original_completion": sample.get("harmful_completion", "")[:200],
+                })
+        else:
+            if collect_examples and len(examples["failed_harmful"]) < n_failed:
+                examples["failed_harmful"].append({
+                    "id": sample.get("id", "unknown"),
+                    "batch_id": batch.get("id"),
+                    "reason": "render_failed",
+                    "sample_keys": list(sample.keys()),
+                })
     
     # Process benign samples
     for sample in batch.get("benign", []):
         stats["benign_total"] += 1
         
         if filter_tool_only and not is_tool_routing_sample(sample):
+            if collect_examples and len(examples["filtered_benign"]) < n_filtered:
+                examples["filtered_benign"].append({
+                    "id": sample.get("id", "unknown"),
+                    "batch_id": batch.get("id"),
+                    "reason": "not_tool_routing",
+                    "has_is_agentic": sample.get("is_agentic", False),
+                    "has_tool_calls": sample.get("has_tool_calls", False),
+                    "completion_preview": sample.get("benign_completion", "")[:200],
+                })
             continue
         stats["benign_tool_routing"] += 1
         
@@ -451,8 +499,25 @@ def rebuild_batch(
             stats["benign_rendered"] += 1
             if has_tool_call:
                 stats["benign_has_tool_call"] += 1
+            
+            if collect_examples and len(examples["rendered_benign"]) < n_rendered:
+                examples["rendered_benign"].append({
+                    "id": sample.get("id", "unknown"),
+                    "batch_id": batch.get("id"),
+                    "has_tool_call": has_tool_call,
+                    "text_preview": text[:300],
+                    "original_completion": sample.get("benign_completion", "")[:200],
+                })
+        else:
+            if collect_examples and len(examples["failed_benign"]) < n_failed:
+                examples["failed_benign"].append({
+                    "id": sample.get("id", "unknown"),
+                    "batch_id": batch.get("id"),
+                    "reason": "render_failed",
+                    "sample_keys": list(sample.keys()),
+                })
     
-    return new_batch, stats
+    return new_batch, stats, examples
 
 
 def load_tool_schema(schema_path: Optional[Path]) -> Tuple[str, Optional[str]]:
@@ -514,6 +579,54 @@ def validate_output(output_path: Path) -> Dict[str, Any]:
     return stats
 
 
+def print_examples_report(examples: Dict[str, List[Dict[str, Any]]]) -> None:
+    """Print collected examples by category."""
+    if not examples:
+        return
+    
+    print(f"\n{'='*80}")
+    print("REBUILD EXAMPLES BY CATEGORY")
+    print('='*80)
+    
+    categories = [
+        ("filtered_harmful", "Filtered Harmful (not tool-routing)"),
+        ("filtered_benign", "Filtered Benign (not tool-routing)"),
+        ("rendered_harmful", "Successfully Rendered Harmful"),
+        ("rendered_benign", "Successfully Rendered Benign"),
+        ("failed_harmful", "Failed to Render Harmful"),
+        ("failed_benign", "Failed to Render Benign"),
+    ]
+    
+    for key, title in categories:
+        items = examples.get(key, [])
+        if not items:
+            continue
+        
+        print(f"\n--- {title} ({len(items)} examples) ---")
+        
+        for i, ex in enumerate(items, 1):
+            print(f"\n  Example {i}/{len(items)}:")
+            print(f"    ID: {ex.get('id', 'N/A')}")
+            print(f"    Batch: {ex.get('batch_id', 'N/A')}")
+            
+            if 'reason' in ex:
+                print(f"    Reason: {ex.get('reason')}")
+            if 'has_tool_call' in ex:
+                print(f"    Has tool call: {ex.get('has_tool_call')}")
+            if 'has_is_agentic' in ex:
+                print(f"    is_agentic flag: {ex.get('has_is_agentic')}")
+            if 'has_tool_calls' in ex:
+                print(f"    has_tool_calls flag: {ex.get('has_tool_calls')}")
+            if 'completion_preview' in ex:
+                print(f"    Completion preview: {ex.get('completion_preview')}")
+            if 'text_preview' in ex:
+                print(f"    Rendered text preview: {ex.get('text_preview')}")
+            if 'original_completion' in ex:
+                print(f"    Original completion: {ex.get('original_completion')}")
+            if 'sample_keys' in ex:
+                print(f"    Available keys: {ex.get('sample_keys')}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Rebuild CB training batches with proper Llama 3.1 format (V2)",
@@ -527,6 +640,38 @@ def main():
     parser.add_argument("--limit", type=int, default=None, help="Limit batches")
     parser.add_argument("--require-100-pct-tools", action="store_true",
                         help="Fail if <100% samples have tool calls")
+    
+    # Example collection
+    example_group = parser.add_argument_group("example collection")
+    example_group.add_argument(
+        "--print-examples",
+        action="store_true",
+        help="Print collected examples to stdout",
+    )
+    example_group.add_argument(
+        "--examples-out",
+        type=Path,
+        default=None,
+        help="Path to save examples JSON (default: <output>.examples.json)",
+    )
+    example_group.add_argument(
+        "--n-filtered",
+        type=int,
+        default=5,
+        help="Number of filtered samples to collect per type",
+    )
+    example_group.add_argument(
+        "--n-rendered",
+        type=int,
+        default=3,
+        help="Number of successfully rendered samples to collect per type",
+    )
+    example_group.add_argument(
+        "--n-failed",
+        type=int,
+        default=5,
+        help="Number of failed samples to collect per type",
+    )
     
     args = parser.parse_args()
     
@@ -569,9 +714,23 @@ def main():
         "benign_total": 0, "benign_tool_routing": 0, "benign_rendered": 0, "benign_has_tool_call": 0,
     }
     
+    collect_examples = args.print_examples or args.examples_out is not None
+    all_examples = {
+        "filtered_harmful": [],
+        "filtered_benign": [],
+        "rendered_harmful": [],
+        "rendered_benign": [],
+        "failed_harmful": [],
+        "failed_benign": [],
+    } if collect_examples else None
+    
     for batch in batches:
-        new_batch, stats = rebuild_batch(
-            batch, system_prompt, tools_json, args.filter_tool_only
+        new_batch, stats, examples = rebuild_batch(
+            batch, system_prompt, tools_json, args.filter_tool_only,
+            collect_examples=collect_examples,
+            n_filtered=args.n_filtered,
+            n_rendered=args.n_rendered,
+            n_failed=args.n_failed,
         )
         
         # Only include non-empty batches
@@ -580,6 +739,11 @@ def main():
         
         for k, v in stats.items():
             total_stats[k] += v
+        
+        # Merge examples
+        if collect_examples and examples:
+            for key in all_examples:
+                all_examples[key].extend(examples[key])
     
     # Print stats
     logger.info("\n" + "=" * 60)
@@ -611,6 +775,16 @@ def main():
     if args.require_100_pct_tools and tool_pct < 99.0:
         logger.error(f"FAILED: Tool-call coverage {tool_pct:.1f}% < 100%")
         return 1
+    
+    # Handle examples
+    if collect_examples and all_examples:
+        if args.print_examples:
+            print_examples_report(all_examples)
+        
+        examples_path = args.examples_out or args.output.with_suffix(".examples.json")
+        with open(examples_path, "w", encoding="utf-8") as f:
+            json.dump(all_examples, f, indent=2, ensure_ascii=False)
+        logger.info(f"\nWrote examples to {examples_path}")
     
     # Write output
     args.output.parent.mkdir(parents=True, exist_ok=True)

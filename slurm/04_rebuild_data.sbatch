@@ -112,7 +112,11 @@ python src/data_generation/rebuild_training_data.py \
     --input "$COMBINED_FILE" \
     --output "$TRAINING_FILE" \
     --tool-schema configs/tool_schemas/b4_standard_v1.json \
-    --filter-tool-only
+    --filter-tool-only \
+    --print-examples \
+    --n-filtered 5 \
+    --n-rendered 3 \
+    --n-failed 5
 
 echo "Training data written to: $TRAINING_FILE"
 
