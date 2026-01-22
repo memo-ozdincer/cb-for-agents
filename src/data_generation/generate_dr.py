@@ -855,6 +855,10 @@ def build_dr_mvp_vllm(
     success_rate = stats["correct_behavior"] / stats["total"] if stats["total"] > 0 else 0
     stats["success_rate"] = success_rate
     
+    # Add examples to stats
+    if collect_examples:
+        stats["examples"] = examples
+    
     logger.info("")
     logger.info("=" * 60)
     logger.info("DR MVP BUILD STATS (vLLM)")
