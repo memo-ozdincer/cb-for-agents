@@ -33,6 +33,20 @@
 #   MAX_TOKENS      - Max tokens to generate (default: 256)
 #   LIMIT           - Limit number of traces to process (optional)
 #
+# Optional output/debug flags:
+#   PRINT_EXAMPLES  - Print collected examples (true/false, default: false)
+#   NO_TRUNCATE     - Do not truncate example printing (true/false, default: false)
+#   NO_WRITE_IDS    - Do not write *.ids.txt (true/false, default: false)
+#   EXAMPLES_OUT    - Path for examples JSON (only for MODE=ds or MODE=dr)
+#
+# Optional example counts (mirrors generate_ds/generate_dr defaults):
+#   N_SUCCESSFUL    - DS successful flips to collect (default: 10)
+#   N_CORRECT       - Correct behavior examples (default: 5)
+#   N_WRONG_TOOL    - DR wrong tool examples (default: 5)
+#   N_NO_TOOL       - No tool call examples (default: 5)
+#   N_OTHER_TOOL    - DS other-tool examples (default: 5)
+#   N_FORMAT_ERRORS - Format error examples (default: 5)
+#
 # Submit:
 #   sbatch slurm/pipeline/02_fill_skeletons.sbatch
 #
@@ -108,6 +122,18 @@ MAX_TOKENS="${MAX_TOKENS:-256}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-4096}"
 LIMIT="${LIMIT:-}"
 
+PRINT_EXAMPLES="${PRINT_EXAMPLES:-false}"
+NO_TRUNCATE="${NO_TRUNCATE:-false}"
+NO_WRITE_IDS="${NO_WRITE_IDS:-false}"
+EXAMPLES_OUT="${EXAMPLES_OUT:-}"
+
+N_SUCCESSFUL="${N_SUCCESSFUL:-10}"
+N_CORRECT="${N_CORRECT:-5}"
+N_WRONG_TOOL="${N_WRONG_TOOL:-5}"
+N_NO_TOOL="${N_NO_TOOL:-5}"
+N_OTHER_TOOL="${N_OTHER_TOOL:-5}"
+N_FORMAT_ERRORS="${N_FORMAT_ERRORS:-5}"
+
 mkdir -p "$OUTPUT_DIR"
 
 echo "Configuration:"
@@ -124,6 +150,16 @@ echo "  TEMPERATURE_DR: $TEMPERATURE_DR"
 echo "  MAX_TOKENS: $MAX_TOKENS"
 echo "  MAX_MODEL_LEN: $MAX_MODEL_LEN"
 echo "  LIMIT: ${LIMIT:-unlimited}"
+echo "  PRINT_EXAMPLES: $PRINT_EXAMPLES"
+echo "  NO_TRUNCATE: $NO_TRUNCATE"
+echo "  NO_WRITE_IDS: $NO_WRITE_IDS"
+echo "  EXAMPLES_OUT: ${EXAMPLES_OUT:-<default>}"
+echo "  N_SUCCESSFUL: $N_SUCCESSFUL"
+echo "  N_CORRECT: $N_CORRECT"
+echo "  N_WRONG_TOOL: $N_WRONG_TOOL"
+echo "  N_NO_TOOL: $N_NO_TOOL"
+echo "  N_OTHER_TOOL: $N_OTHER_TOOL"
+echo "  N_FORMAT_ERRORS: $N_FORMAT_ERRORS"
 echo ""
 
 # Validate inputs
@@ -167,6 +203,31 @@ if [[ -n "$LIMIT" ]]; then
     COMMON_ARGS+=(--limit "$LIMIT")
 fi
 
+# Example/debug args
+if [[ "$PRINT_EXAMPLES" == "true" ]]; then
+    COMMON_ARGS+=(--print-examples)
+fi
+if [[ "$NO_TRUNCATE" == "true" ]]; then
+    COMMON_ARGS+=(--no-truncate)
+fi
+if [[ "$NO_WRITE_IDS" == "true" ]]; then
+    COMMON_ARGS+=(--no-write-ids)
+fi
+
+COMMON_ARGS+=(
+    --n-successful "$N_SUCCESSFUL"
+    --n-correct "$N_CORRECT"
+    --n-wrong-tool "$N_WRONG_TOOL"
+    --n-no-tool "$N_NO_TOOL"
+    --n-other-tool "$N_OTHER_TOOL"
+    --n-format-errors "$N_FORMAT_ERRORS"
+)
+
+if [[ "$MODE" == "both" && -n "$EXAMPLES_OUT" ]]; then
+    echo "WARNING: EXAMPLES_OUT is ignored for MODE=both (writes per-output *.examples.json)."
+    EXAMPLES_OUT=""
+fi
+
 # =============================================================================
 # Derive output filenames from input
 # =============================================================================
@@ -196,7 +257,8 @@ case "$MODE" in
         python src/data_generation/generate_completions.py \
             "${COMMON_ARGS[@]}" \
             --mode ds \
-            --output "$DS_OUTPUT"
+            --output "$DS_OUTPUT" \
+            ${EXAMPLES_OUT:+--examples-out "$EXAMPLES_OUT"}
 
         echo ""
         echo "DS generation complete!"
@@ -216,7 +278,8 @@ case "$MODE" in
         python src/data_generation/generate_completions.py \
             "${COMMON_ARGS[@]}" \
             --mode dr \
-            --output "$DR_OUTPUT"
+            --output "$DR_OUTPUT" \
+            ${EXAMPLES_OUT:+--examples-out "$EXAMPLES_OUT"}
 
         echo ""
         echo "DR generation complete!"

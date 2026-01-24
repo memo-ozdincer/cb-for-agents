@@ -522,16 +522,18 @@ def generate_ds_completion(
     
     Returns completed trace only if attack succeeds (observed_tool == simulated_tool).
     """
-    # Get expected/simulated tools from signal_hints or tool_attack
+    # Get expected/simulated tools from tool_attack (preferred) or signal_hints.
+    # Note: for B4 skeletons, ETL_A stores the *simulated* (wrong) tool in
+    # tool_attack.observed_tool and signal_hints.observed_tool_name.
     expected_tool = None
     simulated_tool = None
-    
-    if trace.signal_hints:
-        expected_tool = trace.signal_hints.expected_tool_name
-        simulated_tool = trace.signal_hints.observed_tool_name
+
     if trace.tool_attack:
-        expected_tool = expected_tool or trace.tool_attack.expected_tool
-        simulated_tool = simulated_tool or trace.tool_attack.observed_tool
+        expected_tool = trace.tool_attack.expected_tool
+        simulated_tool = trace.tool_attack.observed_tool
+    if trace.signal_hints:
+        expected_tool = expected_tool or trace.signal_hints.expected_tool_name
+        simulated_tool = simulated_tool or trace.signal_hints.observed_tool_name
     
     # Build messages from trace
     messages = []
@@ -555,6 +557,13 @@ def generate_ds_completion(
     
     # Fix formatting
     response = fix_assistant_raw_format(response)
+
+    # Capture user content for reporting/debugging
+    user_content = ""
+    for m in messages:
+        if m.get("role") == "user":
+            user_content = m.get("content", "")
+            break
     
     # Extract tool call
     tool_call = extract_tool_call(response)
@@ -570,22 +579,26 @@ def generate_ds_completion(
     # Categorize outcome exactly like generate_ds.py
     if observed_tool is None:
         is_flip_success = False
-        stats["category"] = "no_tool_call"
+        category = "no_tool_call"
     elif observed_tool == simulated_tool:
         is_flip_success = True
-        stats["category"] = "successful_flip"
+        category = "successful_flips"
     elif observed_tool == expected_tool:
         is_flip_success = False
-        stats["category"] = "correct_behavior"
+        category = "correct_behavior"
     else:
         is_flip_success = False
-        stats["category"] = "other_tool"
+        category = "other_tool"
+
+    stats["category"] = category
     
     stats["is_flip_success"] = is_flip_success
     
     is_valid, format_error = validate_llama_format(response)
     stats["format_valid"] = is_valid
     stats["format_error"] = format_error if not is_valid else None
+    stats["assistant_raw"] = response
+    stats["user_content"] = user_content
     
     # Only return if attack succeeded
     if not is_flip_success:
@@ -644,12 +657,12 @@ def generate_dr_completion(
     Creates benign version by removing injection, then generates.
     Returns completed trace only if correct tool is called.
     """
-    # Get expected tool
+    # Get expected tool (prefer tool_attack for consistency with ETL_A)
     expected_tool = None
-    if trace.signal_hints:
-        expected_tool = trace.signal_hints.expected_tool_name
     if trace.tool_attack:
-        expected_tool = expected_tool or trace.tool_attack.expected_tool
+        expected_tool = trace.tool_attack.expected_tool
+    if trace.signal_hints:
+        expected_tool = expected_tool or trace.signal_hints.expected_tool_name
     
     # Get injection text for removal
     injection_text = None
@@ -681,21 +694,41 @@ def generate_dr_completion(
     
     # Fix formatting
     response = fix_assistant_raw_format(response)
+
+    # Capture user content for reporting/debugging (post injection-removal)
+    user_content = ""
+    for m in messages:
+        if m.get("role") == "user":
+            user_content = m.get("content", "")
+            break
     
     # Extract tool call
     tool_call = extract_tool_call(response)
     observed_tool = tool_call["name"] if tool_call else None
     
-    # Determine outcome
+    # Determine outcome exactly like generate_dr.py
+    if observed_tool is None:
+        is_correct = False
+        category = "no_tool_call"
+    elif observed_tool == expected_tool:
+        is_correct = True
+        category = "correct_behavior"
+    else:
+        is_correct = False
+        category = "wrong_tool"
+
     stats = {
         "expected_tool": expected_tool,
         "observed_tool": observed_tool,
-        "is_correct": observed_tool == expected_tool if observed_tool and expected_tool else False,
+        "is_correct": is_correct,
+        "category": category,
     }
     
     is_valid, format_error = validate_llama_format(response)
     stats["format_valid"] = is_valid
     stats["format_error"] = format_error if not is_valid else None
+    stats["assistant_raw"] = response
+    stats["user_content"] = user_content
     
     # Only return if correct behavior
     if not stats["is_correct"]:
@@ -774,6 +807,13 @@ def generate_completions_batch(
     temperature_ds: float = 0.7,
     temperature_dr: float = 0.3,
     max_tokens: int = 256,
+    collect_examples: bool = False,
+    n_successful: int = 10,
+    n_correct: int = 5,
+    n_wrong_tool: int = 5,
+    n_no_tool: int = 5,
+    n_other_tool: int = 5,
+    n_format_errors: int = 5,
     verbose: bool = True,
 ) -> Tuple[List[Trace], List[Trace], Dict[str, Any]]:
     """
@@ -806,6 +846,40 @@ def generate_completions_batch(
         "format_errors": 0,
         "skipped_complete": 0,
     }
+
+    ds_breakdown = {
+        "total": 0,
+        "successful_flips": 0,
+        "correct_behavior": 0,
+        "no_tool_call": 0,
+        "other_tool": 0,
+        "format_errors": 0,
+    }
+    dr_breakdown = {
+        "total": 0,
+        "correct_behavior": 0,
+        "wrong_tool": 0,
+        "no_tool_call": 0,
+        "format_errors": 0,
+    }
+
+    examples = None
+    if collect_examples:
+        examples = {
+            "ds": {
+                "successful_flips": [],
+                "correct_behavior": [],
+                "no_tool_call": [],
+                "other_tool": [],
+                "format_errors": [],
+            },
+            "dr": {
+                "correct_behavior": [],
+                "wrong_tool": [],
+                "no_tool_call": [],
+                "format_errors": [],
+            },
+        }
     
     iterator = tqdm(traces, desc="Generating completions") if verbose else traces
     
@@ -817,6 +891,7 @@ def generate_completions_batch(
         
         # Generate DS
         if mode in ('ds', 'both'):
+            ds_breakdown["total"] += 1
             ds_trace, ds_stats = generate_ds_completion(
                 trace, backend, tools, system_prompt,
                 temperature=temperature_ds, max_tokens=max_tokens,
@@ -825,14 +900,45 @@ def generate_completions_batch(
             if ds_trace:
                 ds_traces.append(ds_trace)
                 stats["ds_success"] += 1
+                ds_breakdown["successful_flips"] += 1
             else:
                 stats["ds_no_flip"] += 1
+                category = ds_stats.get("category")
+                if category in ds_breakdown:
+                    ds_breakdown[category] += 1
             
             if not ds_stats.get("format_valid", True):
                 stats["format_errors"] += 1
+                ds_breakdown["format_errors"] += 1
+
+            if collect_examples and examples is not None:
+                is_valid = ds_stats.get("format_valid", True)
+                category = ds_stats.get("category")
+                ex = {
+                    "id": getattr(trace, "id", None),
+                    "expected_tool": ds_stats.get("expected_tool"),
+                    "observed_tool": ds_stats.get("observed_tool"),
+                    "simulated_tool": ds_stats.get("simulated_tool"),
+                    "user_content": ds_stats.get("user_content", ""),
+                    "assistant_raw": ds_stats.get("assistant_raw", ""),
+                    "format_error": ds_stats.get("format_error"),
+                }
+                if not is_valid:
+                    if len(examples["ds"]["format_errors"]) < n_format_errors:
+                        examples["ds"]["format_errors"].append(ex)
+                else:
+                    max_counts = {
+                        "successful_flips": n_successful,
+                        "correct_behavior": n_correct,
+                        "no_tool_call": n_no_tool,
+                        "other_tool": n_other_tool,
+                    }
+                    if category in max_counts and len(examples["ds"][category]) < max_counts[category]:
+                        examples["ds"][category].append(ex)
         
         # Generate DR
         if mode in ('dr', 'both'):
+            dr_breakdown["total"] += 1
             dr_trace, dr_stats = generate_dr_completion(
                 trace, backend, tools, system_prompt,
                 temperature=temperature_dr, max_tokens=max_tokens,
@@ -841,13 +947,40 @@ def generate_completions_batch(
             if dr_trace:
                 dr_traces.append(dr_trace)
                 stats["dr_success"] += 1
+                dr_breakdown["correct_behavior"] += 1
             elif dr_stats.get("outcome") == "wrong_tool":
                 stats["dr_wrong_tool"] += 1
+                dr_breakdown["wrong_tool"] += 1
             else:
                 stats["dr_no_tool"] += 1
+                dr_breakdown["no_tool_call"] += 1
             
             if not dr_stats.get("format_valid", True):
                 stats["format_errors"] += 1
+                dr_breakdown["format_errors"] += 1
+
+            if collect_examples and examples is not None:
+                is_valid = dr_stats.get("format_valid", True)
+                category = dr_stats.get("category")
+                ex = {
+                    "id": getattr(trace, "id", None),
+                    "expected_tool": dr_stats.get("expected_tool"),
+                    "observed_tool": dr_stats.get("observed_tool"),
+                    "user_content": dr_stats.get("user_content", ""),
+                    "assistant_raw": dr_stats.get("assistant_raw", ""),
+                    "format_error": dr_stats.get("format_error"),
+                }
+                if not is_valid:
+                    if len(examples["dr"]["format_errors"]) < n_format_errors:
+                        examples["dr"]["format_errors"].append(ex)
+                else:
+                    max_counts = {
+                        "correct_behavior": n_correct,
+                        "wrong_tool": n_wrong_tool,
+                        "no_tool_call": n_no_tool,
+                    }
+                    if category in max_counts and len(examples["dr"][category]) < max_counts[category]:
+                        examples["dr"][category].append(ex)
     
     # Compute rates
     skeleton_count = stats["total"] - stats["skipped_complete"]
@@ -856,8 +989,85 @@ def generate_completions_batch(
             stats["ds_yield_rate"] = stats["ds_success"] / skeleton_count
         if mode in ('dr', 'both'):
             stats["dr_yield_rate"] = stats["dr_success"] / skeleton_count
+
+    if mode in ("ds", "both"):
+        ds_breakdown["yield_rate"] = (
+            ds_breakdown["successful_flips"] / ds_breakdown["total"]
+            if ds_breakdown["total"] > 0 else 0
+        )
+        stats["ds_breakdown"] = ds_breakdown
+    if mode in ("dr", "both"):
+        dr_breakdown["success_rate"] = (
+            dr_breakdown["correct_behavior"] / dr_breakdown["total"]
+            if dr_breakdown["total"] > 0 else 0
+        )
+        stats["dr_breakdown"] = dr_breakdown
+    if collect_examples and examples is not None:
+        stats["examples"] = examples
     
     return ds_traces, dr_traces, stats
+
+
+# =============================================================================
+# Example Reporting
+# =============================================================================
+
+def print_examples_report(examples: Dict[str, Any], truncate: bool = True) -> None:
+    """Print collected examples for DS/DR in a human-readable format."""
+    max_len = 200 if truncate else None
+
+    def _truncate(text: Optional[str]) -> str:
+        if text is None:
+            return ""
+        if not max_len:
+            return text
+        return text if len(text) <= max_len else text[:max_len] + "..."
+
+    ds = examples.get("ds", {}) if isinstance(examples, dict) else {}
+    dr = examples.get("dr", {}) if isinstance(examples, dict) else {}
+
+    # DS
+    ds_category_names = {
+        "successful_flips": "Successful Tool Flips (DS targets)",
+        "correct_behavior": "Correct Behavior (non-successful DS)",
+        "no_tool_call": "No Tool Call",
+        "other_tool": "Other Tool",
+        "format_errors": "Format Errors",
+    }
+    for category, name in ds_category_names.items():
+        items = ds.get(category, [])
+        if not items:
+            continue
+        print("\n" + "=" * 80)
+        print(f"DS - {name} ({len(items)} examples)")
+        print("=" * 80)
+        for i, ex in enumerate(items, 1):
+            print(f"\n--- Example {i} ---")
+            print(f"ID: {ex.get('id', 'N/A')}")
+            print(
+                f"Expected: {ex.get('expected_tool')} | Observed: {ex.get('observed_tool')} | Simulated: {ex.get('simulated_tool')}"
+            )
+            print(f"\nUser:\n{_truncate(ex.get('user_content'))}")
+            print(f"\nAssistant Raw:\n{_truncate(ex.get('assistant_raw'))}")
+            if ex.get("format_error"):
+                print(f"\nFormat Error: {ex.get('format_error')}")
+
+    # DR
+    for category, items in dr.items():
+        if not items:
+            continue
+        print("\n" + "=" * 80)
+        print(f"DR - CATEGORY: {category.upper()} ({len(items)} examples)")
+        print("=" * 80)
+        for i, ex in enumerate(items, 1):
+            print(f"\n--- Example {i}/{len(items)} ---")
+            print(f"ID: {ex.get('id', 'N/A')}")
+            print(f"Expected tool: {ex.get('expected_tool', 'N/A')}")
+            print(f"Observed tool: {ex.get('observed_tool', 'N/A')}")
+            if ex.get("format_error"):
+                print(f"Format error: {ex.get('format_error')}")
+            print(f"User: {_truncate(ex.get('user_content'))}")
+            print(f"Assistant raw: {_truncate(ex.get('assistant_raw'))}")
 
 
 # =============================================================================
@@ -946,6 +1156,66 @@ def main():
         "--quiet", action="store_true",
         help="Suppress progress output",
     )
+
+    # Example collection (DS/DR-style)
+    parser.add_argument(
+        "--print-examples",
+        action="store_true",
+        help="Print example datapoints from each category",
+    )
+    parser.add_argument(
+        "--examples-out",
+        type=Path,
+        default=None,
+        help="Output path for examples JSON (default: <output>.examples.json)",
+    )
+    parser.add_argument(
+        "--no-truncate",
+        action="store_true",
+        help="Do not truncate example outputs when printing",
+    )
+    parser.add_argument(
+        "--no-write-ids",
+        action="store_true",
+        help="Do not write <output>.ids.txt files",
+    )
+
+    parser.add_argument(
+        "--n-successful",
+        type=int,
+        default=10,
+        help="Number of DS successful flip examples to collect (default: 10)",
+    )
+    parser.add_argument(
+        "--n-correct",
+        type=int,
+        default=5,
+        help="Number of correct behavior examples to collect (default: 5)",
+    )
+    parser.add_argument(
+        "--n-wrong-tool",
+        type=int,
+        default=5,
+        help="Number of DR wrong tool examples to collect (default: 5)",
+    )
+    parser.add_argument(
+        "--n-no-tool",
+        type=int,
+        default=5,
+        help="Number of no tool call examples to collect (default: 5)",
+    )
+    parser.add_argument(
+        "--n-other-tool",
+        type=int,
+        default=5,
+        help="Number of other tool examples to collect (default: 5)",
+    )
+    parser.add_argument(
+        "--n-format-errors",
+        type=int,
+        default=5,
+        help="Number of format error examples to collect (default: 5)",
+    )
     
     args = parser.parse_args()
     
@@ -986,6 +1256,13 @@ def main():
         temperature_ds=args.temperature_ds,
         temperature_dr=args.temperature_dr,
         max_tokens=args.max_tokens,
+        collect_examples=(args.print_examples or args.examples_out is not None),
+        n_successful=args.n_successful,
+        n_correct=args.n_correct,
+        n_wrong_tool=args.n_wrong_tool,
+        n_no_tool=args.n_no_tool,
+        n_other_tool=args.n_other_tool,
+        n_format_errors=args.n_format_errors,
         verbose=not args.quiet,
     )
     
@@ -993,14 +1270,93 @@ def main():
     if args.mode == 'ds':
         write_traces(args.output, ds_traces)
         logger.info(f"Wrote {len(ds_traces)} DS traces to {args.output}")
+        if not args.no_write_ids:
+            ids_path = args.output.with_suffix(".ids.txt")
+            with open(ids_path, "w", encoding="utf-8") as f:
+                for t in ds_traces:
+                    f.write(getattr(t, "id", "") + "\n")
+            logger.info(f"Wrote IDs to {ids_path}")
     elif args.mode == 'dr':
         write_traces(args.output, dr_traces)
         logger.info(f"Wrote {len(dr_traces)} DR traces to {args.output}")
+        if not args.no_write_ids:
+            ids_path = args.output.with_suffix(".ids.txt")
+            with open(ids_path, "w", encoding="utf-8") as f:
+                for t in dr_traces:
+                    f.write(getattr(t, "id", "") + "\n")
+            logger.info(f"Wrote IDs to {ids_path}")
     else:
         write_traces(args.output_ds, ds_traces)
         write_traces(args.output_dr, dr_traces)
         logger.info(f"Wrote {len(ds_traces)} DS traces to {args.output_ds}")
         logger.info(f"Wrote {len(dr_traces)} DR traces to {args.output_dr}")
+        if not args.no_write_ids:
+            ds_ids_path = args.output_ds.with_suffix(".ids.txt")
+            with open(ds_ids_path, "w", encoding="utf-8") as f:
+                for t in ds_traces:
+                    f.write(getattr(t, "id", "") + "\n")
+            logger.info(f"Wrote DS IDs to {ds_ids_path}")
+
+            dr_ids_path = args.output_dr.with_suffix(".ids.txt")
+            with open(dr_ids_path, "w", encoding="utf-8") as f:
+                for t in dr_traces:
+                    f.write(getattr(t, "id", "") + "\n")
+            logger.info(f"Wrote DR IDs to {dr_ids_path}")
+
+    # Handle examples
+    if "examples" in stats and stats["examples"]:
+        examples = stats.pop("examples")
+
+        if args.print_examples:
+            print_examples_report(examples, truncate=not args.no_truncate)
+
+        if args.mode == "ds":
+            examples_path = args.examples_out or args.output.with_suffix(".examples.json")
+            with open(examples_path, "w", encoding="utf-8") as f:
+                json.dump(examples.get("ds", {}), f, indent=2, ensure_ascii=False)
+            logger.info(f"Wrote DS examples to {examples_path}")
+        elif args.mode == "dr":
+            examples_path = args.examples_out or args.output.with_suffix(".examples.json")
+            with open(examples_path, "w", encoding="utf-8") as f:
+                json.dump(examples.get("dr", {}), f, indent=2, ensure_ascii=False)
+            logger.info(f"Wrote DR examples to {examples_path}")
+        else:
+            ds_examples_path = args.output_ds.with_suffix(".examples.json")
+            dr_examples_path = args.output_dr.with_suffix(".examples.json")
+            with open(ds_examples_path, "w", encoding="utf-8") as f:
+                json.dump(examples.get("ds", {}), f, indent=2, ensure_ascii=False)
+            with open(dr_examples_path, "w", encoding="utf-8") as f:
+                json.dump(examples.get("dr", {}), f, indent=2, ensure_ascii=False)
+            logger.info(f"Wrote DS examples to {ds_examples_path}")
+            logger.info(f"Wrote DR examples to {dr_examples_path}")
+
+    # Write stats
+    stats_for_file = {k: v for k, v in stats.items() if k != "examples"}
+    if args.mode == "ds":
+        stats_path = args.output.with_suffix(".stats.json")
+        with open(stats_path, "w", encoding="utf-8") as f:
+            json.dump(stats_for_file, f, indent=2)
+        logger.info(f"Wrote stats to {stats_path}")
+    elif args.mode == "dr":
+        stats_path = args.output.with_suffix(".stats.json")
+        with open(stats_path, "w", encoding="utf-8") as f:
+            json.dump(stats_for_file, f, indent=2)
+        logger.info(f"Wrote stats to {stats_path}")
+    else:
+        ds_stats_path = args.output_ds.with_suffix(".stats.json")
+        dr_stats_path = args.output_dr.with_suffix(".stats.json")
+
+        ds_stats = dict(stats_for_file)
+        dr_stats = dict(stats_for_file)
+        ds_stats.pop("dr_breakdown", None)
+        dr_stats.pop("ds_breakdown", None)
+
+        with open(ds_stats_path, "w", encoding="utf-8") as f:
+            json.dump(ds_stats, f, indent=2)
+        with open(dr_stats_path, "w", encoding="utf-8") as f:
+            json.dump(dr_stats, f, indent=2)
+        logger.info(f"Wrote DS stats to {ds_stats_path}")
+        logger.info(f"Wrote DR stats to {dr_stats_path}")
     
     # Print stats
     logger.info("")
@@ -1013,11 +1369,30 @@ def main():
         ds_rate = stats.get('ds_yield_rate', 0)
         logger.info(f"DS successful:           {stats['ds_success']} ({ds_rate:.1%})")
         logger.info(f"DS no flip:              {stats['ds_no_flip']}")
+        dsb = stats.get("ds_breakdown")
+        if dsb:
+            logger.info("-")
+            logger.info("DS breakdown")
+            logger.info(f"  successful_flips:      {dsb.get('successful_flips', 0)}")
+            logger.info(f"  correct_behavior:      {dsb.get('correct_behavior', 0)}")
+            logger.info(f"  no_tool_call:          {dsb.get('no_tool_call', 0)}")
+            logger.info(f"  other_tool:            {dsb.get('other_tool', 0)}")
+            logger.info(f"  format_errors:         {dsb.get('format_errors', 0)}")
+            logger.info(f"  yield_rate:            {dsb.get('yield_rate', 0):.1%}")
     if args.mode in ('dr', 'both'):
         dr_rate = stats.get('dr_yield_rate', 0)
         logger.info(f"DR successful:           {stats['dr_success']} ({dr_rate:.1%})")
         logger.info(f"DR wrong tool:           {stats['dr_wrong_tool']}")
         logger.info(f"DR no tool:              {stats['dr_no_tool']}")
+        drb = stats.get("dr_breakdown")
+        if drb:
+            logger.info("-")
+            logger.info("DR breakdown")
+            logger.info(f"  correct_behavior:      {drb.get('correct_behavior', 0)}")
+            logger.info(f"  wrong_tool:            {drb.get('wrong_tool', 0)}")
+            logger.info(f"  no_tool_call:          {drb.get('no_tool_call', 0)}")
+            logger.info(f"  format_errors:         {drb.get('format_errors', 0)}")
+            logger.info(f"  success_rate:          {drb.get('success_rate', 0):.1%}")
     logger.info(f"Format errors:           {stats['format_errors']}")
     logger.info("=" * 60)
 
