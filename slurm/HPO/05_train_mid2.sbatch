@@ -94,7 +94,7 @@ accelerate launch --num_processes ${SLURM_GPUS_ON_NODE:-1} \
     --learning-rate 4e-5 \
     --lora-r 16 \
     --lora-alpha 32 \
-    --cb-target-layers 13 17 \
+    --cb-target-layers 10 12 14 16 18 20 \
     --beta-kl 0.5 \
     --kl-temperature 1.0 \
     --wandb-project "circuit-breakers" \

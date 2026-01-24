@@ -95,7 +95,7 @@ accelerate launch --num_processes 1 \
     --learning-rate 5e-5 \
     --lora-r 16 \
     --lora-alpha 32 \
-    --cb-target-layers 10 20 \
+    --cb-target-layers 10 12 14 16 18 20 \
     --beta-kl 0.0 \
     --wandb-project "circuit-breakers-test" \
     --wandb-run-name "test_kl_baseline_${SLURM_JOB_ID}"
@@ -127,7 +127,7 @@ accelerate launch --num_processes 1 \
     --learning-rate 5e-5 \
     --lora-r 16 \
     --lora-alpha 32 \
-    --cb-target-layers 10 20 \
+    --cb-target-layers 10 12 14 16 18 20 \
     --beta-kl 0.1 \
     --kl-temperature 1.0 \
     --wandb-project "circuit-breakers-test" \
@@ -160,7 +160,7 @@ accelerate launch --num_processes 1 \
     --learning-rate 5e-5 \
     --lora-r 16 \
     --lora-alpha 32 \
-    --cb-target-layers 10 20 \
+    --cb-target-layers 10 12 14 16 18 20 \
     --beta-kl 0.3 \
     --kl-temperature 1.0 \
     --wandb-project "circuit-breakers-test" \
@@ -193,7 +193,7 @@ accelerate launch --num_processes 1 \
     --learning-rate 5e-5 \
     --lora-r 16 \
     --lora-alpha 32 \
-    --cb-target-layers 10 20 \
+    --cb-target-layers 10 12 14 16 18 20 \
     --beta-kl 0.5 \
     --kl-temperature 1.0 \
     --wandb-project "circuit-breakers-test" \
@@ -226,7 +226,7 @@ accelerate launch --num_processes 1 \
     --learning-rate 5e-5 \
     --lora-r 16 \
     --lora-alpha 32 \
-    --cb-target-layers 10 20 \
+    --cb-target-layers 10 12 14 16 18 20 \
     --beta-kl 0.3 \
     --kl-temperature 2.0 \
     --wandb-project "circuit-breakers-test" \

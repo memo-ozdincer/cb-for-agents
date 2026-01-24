@@ -1553,6 +1553,14 @@ class CircuitBreakerTrainer:
         # The KL loss helps preserve benign behavior via output distribution matching
         total_loss = cs * loss_reroute + cr * (loss_retain + beta_kl * loss_kl)
 
+        # === Diagnostic Logging ===
+        if self.global_step % 50 == 0:
+            self.accelerator.print(
+                f"[Step {self.global_step}] cs={cs:.3f} cr={cr:.3f} | "
+                f"cos_sim={reroute_metrics['cos_sim_mean']:.4f} | "
+                f"L_rr={loss_reroute.item():.4f} L_ret={loss_retain.item():.4f}"
+            )
+
         # Backward pass (SINGLE backward through combined graph)
         self.accelerator.backward(total_loss)
 
