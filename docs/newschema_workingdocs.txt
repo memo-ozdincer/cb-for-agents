@@ -1,0 +1,344 @@
+
+Canonical Schema Integration Notes
+=================================
+
+This doc tracks the Tier A -> Tier B conversion and how it connects to the
+rest of the pipeline.
+
+------------------------------------------------------------
+1) Schema of Record
+------------------------------------------------------------
+Schema: configs/schemas/trace_v1.json
+Python implementation: src/schemas/trace.py
+
+Tier B trace_v1 is the canonical format for ALL training data. Every raw
+dataset (Tier A) is converted into Trace objects with:
+- messages[] (system/user/assistant/tool)
+- labels (harmful/benign + security_outcome)
+- provenance (source.dataset, source.subset, record_locator)
+- signal_hints (injection span, expected/observed tools where relevant)
+- completeness: "skeleton" | "complete" (new)
+- tier: "B1" | "B2" (new)
+
+------------------------------------------------------------
+1.1) Data Tiers & Completeness
+------------------------------------------------------------
+The pipeline now distinguishes between two sub-tiers of Tier B:
+
+**Tier B1 (Skeleton)**
+- Traces with NO assistant messages
+- completeness = "skeleton"
+- tier = "B1"
+- Cannot be used for training with assistant_only LMP (zero loss)
+- Requires generate_completions.py to add assistant responses
+
+**Tier B2 (Complete)**
+- Traces WITH assistant messages
+- completeness = "complete"
+- tier = "B2"
+- Ready for rendering and loss masking
+- Can be processed by ETL_B
+
+**Flow:**
+```
+Raw Data (Tier A)
+      │
+      ▼
+  ETL_A.py ─────► trace_v1 (marks completeness & tier)
+      │
+      ├──► B1 Skeleton traces ──► generate_completions.py ──► B2 Complete
+      │                               (DS: model follows injection)
+      │                               (DR: model ignores injection)
+      │
+      └──► B2 Complete traces ──────────────────────────────────┐
+                                                                  │
+                                                                  ▼
+                                                            ETL_B.py
+                                                           (--allow-skeleton
+                                                            for B1 if needed)
+                                                                  │
+                                                                  ▼
+                                                        render_v1 + lossmask_v1
+```
+
+------------------------------------------------------------
+2) ETL Layer (Raw -> Canonical)
+------------------------------------------------------------
+Script: src/schemas/tools/ETL_A.py
+
+What it does:
+- Reads raw JSONL inputs
+- Normalizes to trace_v1
+- Writes JSONL traces (one per line)
+- **NEW**: Sets completeness and tier based on assistant message presence
+
+Supported raw inputs:
+Fujitsu
+	- B4: orchestrator_attacks_combined_deduplicated.jsonl (skeleton - needs generation)
+	- (B1, B2, B3 REMOVED - not used)
+
+AgentDojo
+	- data/agent_dojo/agentdojo-*.jsonl (typically complete)
+
+Output:
+- data/traces/*.jsonl (trace_v1 records with completeness/tier fields)
+
+------------------------------------------------------------
+2.1) Completion Generation (B1 -> B2)
+------------------------------------------------------------
+Script: src/data_generation/generate_completions.py
+
+What it does:
+- Takes B1 skeleton traces (no assistant messages)
+- Generates assistant completions via LLM (vLLM or HuggingFace)
+- Outputs B2 complete traces with assistant tool-call messages
+
+Generation Modes:
+- DS (follows_injection): Model follows injection, calls wrong tool
+  - Only outputs traces where attack succeeds (observed == simulated_tool)
+  - Used for CB harmful examples (Ds set)
+  
+- DR (ignores_injection): Model ignores injection, calls correct tool
+  - Removes injection from user message before generation
+  - Only outputs traces where correct tool is called
+  - Used for CB benign examples (Dr set)
+
+Usage:
+```bash
+# Generate DS (harmful - model follows injection)
+python src/data_generation/generate_completions.py \
+    --traces data/traces/fujitsu_b4_skeletons.jsonl \
+    --output data/traces/fujitsu_b4_ds.jsonl \
+    --mode ds \
+    --tool-schema configs/tool_schemas/b4_standard_v1.json \
+    --model meta-llama/Llama-3.1-8B-Instruct \
+    --use-vllm --tensor-parallel-size 4
+
+# Generate DR (benign - model ignores injection)
+python src/data_generation/generate_completions.py \
+    --traces data/traces/fujitsu_b4_skeletons.jsonl \
+    --output data/traces/fujitsu_b4_dr.jsonl \
+    --mode dr \
+    --tool-schema configs/tool_schemas/b4_standard_v1.json \
+    --model meta-llama/Llama-3.1-8B-Instruct \
+    --use-vllm
+
+# Generate both in one pass
+python src/data_generation/generate_completions.py \
+    --traces data/traces/fujitsu_b4_skeletons.jsonl \
+    --output-ds data/traces/fujitsu_b4_ds.jsonl \
+    --output-dr data/traces/fujitsu_b4_dr.jsonl \
+    --mode both \
+    --tool-schema configs/tool_schemas/b4_standard_v1.json \
+    --model meta-llama/Llama-3.1-8B-Instruct
+```
+
+------------------------------------------------------------
+3) ETL Layer (Canonical -> Derived)
+------------------------------------------------------------
+Script: src/schemas/tools/ETL_B.py
+
+What it does:
+- Reads trace_v1 JSONL inputs
+- Renders traces with apply_chat_template (tokenizer-specific)
+- Produces render_v1 JSONL (Tier C)
+- Applies LMP policies to produce lossmask_v1 JSONL
+
+**NEW Behavior:**
+- By default, SKIPS skeleton traces (tier=B1, completeness=skeleton)
+- Use --allow-skeleton flag to process skeleton traces
+- When --allow-skeleton is used, applies --skeleton-policy (default: full_sequence)
+
+Inputs:
+- data/traces/*.jsonl (trace_v1 records, preferably B2 complete)
+
+Outputs:
+- data/renders/*.jsonl (render_v1)
+- data/lossmasks/*.jsonl (lossmask_v1)
+
+Usage:
+```bash
+# Normal use (skips skeletons)
+python src/schemas/tools/ETL_B.py \
+    --traces data/traces/fujitsu_b4_ds.jsonl \
+    --render-out data/renders/fujitsu_b4_ds.jsonl \
+    --lossmask-out data/lossmasks/fujitsu_b4_ds.jsonl \
+    --tokenizer meta-llama/Llama-3.1-8B-Instruct
+
+# Process skeletons with full_sequence policy
+python src/schemas/tools/ETL_B.py \
+    --traces data/traces/mixed.jsonl \
+    --render-out data/renders/mixed.jsonl \
+    --lossmask-out data/lossmasks/mixed.jsonl \
+    --tokenizer meta-llama/Llama-3.1-8B-Instruct \
+    --allow-skeleton --skeleton-policy full_sequence
+```
+
+Notes:
+- LMP policy comes from trace.training.loss_mask_policy (overrideable)
+- MWCS schedule can adjust sample_weight per mixture class
+- Alignment is computed via chat template prefixes (message-level spans)
+
+------------------------------------------------------------
+4) Field Mapping Summary (Tier A -> Tier B)
+------------------------------------------------------------
+Fujitsu B4 (Orchestrator / Tool Flip)
+- messages: system + user (combined_query)
+- labels: harmful if success=true
+- tool_attack: expected_tool vs simulated_tool
+- signal_hints: injection_char_span for malicious_injection
+- **completeness: skeleton** (no assistant - needs generation)
+- **tier: B1** (incomplete, needs generate_completions.py)
+
+AgentDojo
+- messages: full multi-turn with tool_calls parsed
+- labels: harmful when injection_task_id != null (attack present)
+- labels.attack_succeeded: true only when security=false
+- task: prompt_injection
+- source.subset: suite_name (banking|slack|travel|workspace)
+- **completeness: complete** (has assistant messages)
+- **tier: B2** (ready for ETL_B)
+
+------------------------------------------------------------
+5) Downstream Stages (After Tier B)
+------------------------------------------------------------
+Pipeline flow for Fujitsu B4:
+1. ETL_A.py: Raw B4 -> B1 skeleton traces
+2. generate_completions.py --mode ds: B1 -> DS traces (harmful, attack succeeds)
+3. generate_completions.py --mode dr: B1 -> DR traces (benign, correct behavior)
+4. ETL_B.py: DS/DR traces -> render_v1 + lossmask_v1
+5. Training: Use renders/lossmasks for CB training
+
+Pipeline flow for AgentDojo:
+1. ETL_A.py: Raw AgentDojo -> B2 complete traces
+2. ETL_B.py: B2 traces -> render_v1 + lossmask_v1
+3. Training: Use renders/lossmasks for CB training
+
+------------------------------------------------------------
+6) Notes
+------------------------------------------------------------
+- src/schemas/__init__.py now exports Trace + render/lossmask classes for easier imports.
+- ETL_A intentionally avoids any ds/dr conversion or training-specific logic.
+- Multi-turn is supported via messages[] (any length).
+- Generated responses are represented as assistant messages (role="assistant").
+- System prompts are stored as messages with role="system" (typically message[0]).
+- Tool responses (role="tool") carry tool_call_id and name; tool_calls are kept on assistant messages only.
+- Fields not present in a raw dataset are left blank (None) but retained in trace_v1 for future fill-in.
+- **NEW**: Completeness ("skeleton" | "complete") tracks whether traces have assistant messages.
+- **NEW**: Tier ("B1" | "B2") indicates processing stage: B1 needs generation, B2 is ready for rendering.
+- **NEW**: ETL_B skips skeleton traces by default; use --allow-skeleton to process them.
+
+------------------------------------------------------------
+7) Dataset Field Coverage & Gaps
+------------------------------------------------------------
+This section documents what each Tier A dataset provides and what may need
+augmentation to fully populate trace_v1 fields.
+
+Fujitsu B4 (Orchestrator / Tool Flip)
+Available:
+- combined_query (user content)
+- malicious_injection (injection span)
+- expected_tool vs simulated_tool (tool_attack + signal_hints)
+- success (attack outcome - from simulation, NOT generation)
+Missing / Requires Generation:
+- **Assistant messages** (must use generate_completions.py)
+- Tool call arguments (generated during completion)
+Augmentation via generate_completions.py:
+- --mode ds: Generate harmful completions (model follows injection)
+- --mode dr: Generate benign completions (model ignores injection)
+
+AgentDojo
+Available:
+- Full multi-turn messages with tool_calls
+- security + success labels
+- injection_task_id for attack presence
+- suite_name (subset)
+Missing / Optional:
+- Explicit injection spans in messages (can be computed)
+- Tool schema references (schema_ref)
+Status: **Complete (B2)** - ready for ETL_B
+
+------------------------------------------------------------
+8) MWCS Completeness Tracking
+------------------------------------------------------------
+The MWCS registry now supports completeness constraints per mixture class:
+
+```json
+{
+  "mixture_classes": {
+    "fujitsu_b4/tool_flip": {
+      "name": "Fujitsu B4 Tool Flip",
+      "category": "harmful",
+      "requires_completeness": "complete",
+      "allowed_tiers": ["B2"],
+      "zero_loss_warning": true
+    }
+  }
+}
+```
+
+Fields:
+- requires_completeness: "skeleton" | "complete" | "any"
+- allowed_tiers: ["B1"], ["B2"], or ["B1", "B2"]
+- zero_loss_warning: Warn if traces would produce zero loss
+
+This prevents accidentally including skeleton traces in training with
+assistant_only LMP, which would result in zero loss.
+
+------------------------------------------------------------
+9) Full Validation Checklist
+------------------------------------------------------------
+Goal: ensure all trace_v1 artifacts conform to schema and surface gaps.
+
+Recommended steps:
+1) Convert raw data to trace_v1 using ETL_A.
+2) Validate the resulting JSONL with scripts/validate_trace_schema.py
+	(uses configs/schemas/trace_v1.json).
+3) Check completeness field: skeleton traces need generate_completions.py
+4) Generate completions for B1 traces using generate_completions.py
+5) Process B2 traces with ETL_B (or use --allow-skeleton for special cases)
+6) Review missing-field counts to decide where augmentation is needed.
+7) Spot-check tool-call and tool-response alignment in generated traces.
+
+------------------------------------------------------------
+10) Example End-to-End Pipeline
+------------------------------------------------------------
+```bash
+# Step 1: Convert raw Fujitsu B4 to trace_v1 (produces B1 skeletons)
+python src/schemas/tools/ETL_A.py \
+    --fujitsu-b4 data/fujitsu/orchestrator_attacks_combined_deduplicated.jsonl \
+    --output data/traces/fujitsu_b4_raw.jsonl \
+    --split train
+
+# Step 2: Generate DS completions (harmful - model follows injection)
+python src/data_generation/generate_completions.py \
+    --traces data/traces/fujitsu_b4_raw.jsonl \
+    --output data/traces/fujitsu_b4_ds.jsonl \
+    --mode ds \
+    --tool-schema configs/tool_schemas/b4_standard_v1.json \
+    --model meta-llama/Llama-3.1-8B-Instruct \
+    --use-vllm --tensor-parallel-size 4
+
+# Step 3: Generate DR completions (benign - model ignores injection)
+python src/data_generation/generate_completions.py \
+    --traces data/traces/fujitsu_b4_raw.jsonl \
+    --output data/traces/fujitsu_b4_dr.jsonl \
+    --mode dr \
+    --tool-schema configs/tool_schemas/b4_standard_v1.json \
+    --model meta-llama/Llama-3.1-8B-Instruct \
+    --use-vllm --tensor-parallel-size 4
+
+# Step 4: Render and lossmask DS traces
+python src/schemas/tools/ETL_B.py \
+    --traces data/traces/fujitsu_b4_ds.jsonl \
+    --render-out data/renders/fujitsu_b4_ds.jsonl \
+    --lossmask-out data/lossmasks/fujitsu_b4_ds.jsonl \
+    --tokenizer meta-llama/Llama-3.1-8B-Instruct
+
+# Step 5: Render and lossmask DR traces
+python src/schemas/tools/ETL_B.py \
+    --traces data/traces/fujitsu_b4_dr.jsonl \
+    --render-out data/renders/fujitsu_b4_dr.jsonl \
+    --lossmask-out data/lossmasks/fujitsu_b4_dr.jsonl \
+    --tokenizer meta-llama/Llama-3.1-8B-Instruct
+```

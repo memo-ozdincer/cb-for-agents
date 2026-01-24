@@ -1,0 +1,355 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "trace_v1",
+  "title": "Canonical Trace Schema v1",
+  "description": "Model-agnostic trace schema for CB training. Supports multi-turn traces, single-turn flips, and tool-call supervision.",
+  "type": "object",
+  "required": ["id", "source", "messages", "split"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Deterministic ID: trace_<source>_<hash> where hash is SHA256 of normalized content.",
+      "pattern": "^trace_[a-z0-9_]+_[a-f0-9]{16,64}$"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of trace creation."
+    },
+    "completeness": {
+      "type": "string",
+      "enum": ["skeleton", "complete"],
+      "description": "Indicates if trace has all required messages. 'skeleton' = missing assistant response (needs generation). 'complete' = ready for training.",
+      "default": "complete"
+    },
+    "tier": {
+      "type": "string",
+      "enum": ["B1", "B2"],
+      "description": "Data tier: B1 = skeleton/incomplete (needs generation), B2 = complete (ready for loss masking).",
+      "default": "B2"
+    },
+    "source": {
+      "type": "object",
+      "description": "Provenance tracking for the trace.",
+      "required": ["dataset"],
+      "additionalProperties": false,
+      "properties": {
+        "tier": {
+          "type": "string",
+          "enum": ["raw", "curated", "derived"],
+          "default": "curated"
+        },
+        "dataset": {
+          "type": "string",
+          "description": "Source dataset identifier.",
+          "enum": ["fujitsu_b4", "agentdojo", "tau2", "agentharm", "webarena", "weblinx", "attackqa", "synthetic"]
+        },
+        "subset": {
+          "type": "string",
+          "description": "Subset within dataset (e.g., 'orchestrator', 'banking', 'airline')."
+        },
+        "record_locator": {
+          "type": "object",
+          "description": "How to find the original record.",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": ["jsonl_line", "uuid", "path", "index"]
+            },
+            "value": {
+              "type": "string"
+            }
+          }
+        },
+        "ingest_version": {
+          "type": "string",
+          "description": "Version of the ingestion pipeline that created this trace."
+        }
+      }
+    },
+    "task": {
+      "type": "object",
+      "description": "Task family and name for grouping.",
+      "additionalProperties": false,
+      "properties": {
+        "family": {
+          "type": "string",
+          "description": "Task family (e.g., 'tool_flip', 'prompt_injection', 'capability')."
+        },
+        "name": {
+          "type": "string",
+          "description": "Specific task name."
+        },
+        "variant": {
+          "type": "string",
+          "description": "Task variant (e.g., attack subtype)."
+        }
+      }
+    },
+    "split": {
+      "type": "string",
+      "enum": ["train", "eval", "test", "dev"],
+      "description": "Data split assignment."
+    },
+    "messages": {
+      "type": "array",
+      "description": "Conversation turns. Single-turn flips have 2-3 messages; multi-turn traces have more.",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/Message"
+      }
+    },
+    "labels": {
+      "type": "object",
+      "description": "Outcome labels for the trace.",
+      "additionalProperties": false,
+      "properties": {
+        "category": {
+          "type": "string",
+          "enum": ["harmful", "benign"],
+          "description": "Primary category for CB training: harmful (Ds) or benign (Dr)."
+        },
+        "security_outcome": {
+          "type": "string",
+          "enum": ["safe", "unsafe", "refusal", "tool_misuse", "unknown"],
+          "description": "Security outcome of the interaction."
+        },
+        "attack_type": {
+          "type": "string",
+          "description": "Type of attack if applicable (e.g., 'tool_flip', 'prompt_injection', 'hidden_json')."
+        },
+        "attack_succeeded": {
+          "type": "boolean",
+          "description": "Whether the attack succeeded (for harmful traces)."
+        },
+        "capability_category": {
+          "type": "string",
+          "description": "Capability being tested (for benign traces)."
+        }
+      }
+    },
+    "tool_attack": {
+      "type": "object",
+      "description": "Tool-flip attack details (for B4-style attacks).",
+      "additionalProperties": false,
+      "properties": {
+        "expected_tool": {
+          "type": "string",
+          "description": "The tool that SHOULD have been called."
+        },
+        "observed_tool": {
+          "type": "string",
+          "description": "The tool that WAS called (attack target)."
+        },
+        "attack_vector": {
+          "type": "string",
+          "description": "How the attack was delivered (e.g., 'hidden_json', 'comment_injection')."
+        },
+        "injection_text": {
+          "type": "string",
+          "description": "The injected malicious text."
+        }
+      }
+    },
+    "training": {
+      "type": "object",
+      "description": "Training configuration for this trace.",
+      "additionalProperties": false,
+      "properties": {
+        "sample_weight": {
+          "type": "number",
+          "minimum": 0,
+          "default": 1.0,
+          "description": "Weight multiplier for this sample in training."
+        },
+        "loss_mask_policy": {
+          "type": "string",
+          "description": "ID of loss masking policy from LMP registry.",
+          "default": "assistant_only"
+        },
+        "loss_mask_params": {
+          "type": "object",
+          "description": "Parameters for the loss masking policy.",
+          "additionalProperties": true
+        },
+        "mixture": {
+          "type": "object",
+          "description": "Mixture assignment for curriculum learning.",
+          "properties": {
+            "class_id": {
+              "type": "string",
+              "description": "Mixture class (e.g., 'fujitsu_b4/tool_flip', 'agentdojo/injection')."
+            },
+            "stage_tags": {
+              "type": "array",
+              "items": {"type": "string"},
+              "description": "Curriculum stage tags (e.g., ['stage1', 'stage2_candidate'])."
+            }
+          }
+        }
+      }
+    },
+    "links": {
+      "type": "object",
+      "description": "Links to related traces and raw records.",
+      "additionalProperties": false,
+      "properties": {
+        "raw_id": {
+          "type": "string",
+          "description": "ID of the original raw record."
+        },
+        "paired_trace_id": {
+          "type": "string",
+          "description": "ID of paired trace (Ds <-> Dr linkage)."
+        },
+        "parent_trace_ids": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "IDs of traces this was derived from."
+        }
+      }
+    },
+    "signal_hints": {
+      "type": "object",
+      "description": "Character-level hints for signal detection (tokenizer-agnostic). Token-level signals are computed in render_v1.",
+      "additionalProperties": false,
+      "properties": {
+        "injection_char_span": {
+          "type": "object",
+          "description": "Character span of the injection text in the input (for shock detection).",
+          "properties": {
+            "message_index": {
+              "type": "integer",
+              "description": "Index of the message containing the injection."
+            },
+            "char_start": {
+              "type": "integer",
+              "description": "Start character offset within the message content."
+            },
+            "char_end": {
+              "type": "integer",
+              "description": "End character offset within the message content."
+            }
+          }
+        },
+        "expected_tool_name": {
+          "type": "string",
+          "description": "The tool that SHOULD be called (for action commitment detection)."
+        },
+        "observed_tool_name": {
+          "type": "string",
+          "description": "The tool that WAS called (the bad/wrong tool)."
+        },
+        "guarantee_prefix_hint": {
+          "type": "string",
+          "description": "Optional: Known prefix after which action is guaranteed (e.g., '<|python_tag|>{\"name\": \"search_web\"')."
+        }
+      }
+    }
+  },
+  "$defs": {
+    "Message": {
+      "type": "object",
+      "required": ["role", "content"],
+      "additionalProperties": false,
+      "properties": {
+        "mid": {
+          "type": "string",
+          "description": "Message ID (optional but useful for alignment)."
+        },
+        "role": {
+          "type": "string",
+          "enum": ["system", "user", "assistant", "tool"],
+          "description": "Message role."
+        },
+        "name": {
+          "type": "string",
+          "description": "Speaker name or tool name (for multi-agent or tool responses)."
+        },
+        "content": {
+          "type": "string",
+          "description": "Message content as text."
+        },
+        "tool_calls": {
+          "type": "array",
+          "description": "Tool calls made in this message (assistant only).",
+          "items": {
+            "$ref": "#/$defs/ToolCall"
+          }
+        },
+        "tool_call_id": {
+          "type": "string",
+          "description": "ID of tool call this message responds to (tool role only)."
+        },
+        "thinking": {
+          "type": "string",
+          "description": "Chain-of-thought / reasoning trace (if captured)."
+        }
+      }
+    },
+    "ToolCall": {
+      "type": "object",
+      "required": ["function"],
+      "additionalProperties": false,
+      "properties": {
+        "call_id": {
+          "type": "string",
+          "description": "Stable ID for this tool call within the trace."
+        },
+        "function": {
+          "type": "object",
+          "required": ["name"],
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Function/tool name."
+            },
+            "arguments": {
+              "type": "object",
+              "description": "Function arguments as object.",
+              "additionalProperties": true
+            },
+            "arguments_json": {
+              "type": "string",
+              "description": "Raw arguments JSON string (for exact replay)."
+            }
+          }
+        },
+        "schema_ref": {
+          "type": "object",
+          "description": "Reference to the tool schema used.",
+          "properties": {
+            "schema_version": {
+              "type": "string",
+              "description": "Tool schema version (e.g., 'b4_standard_v1')."
+            },
+            "schema_digest": {
+              "type": "string",
+              "description": "SHA256 digest of the tool schema."
+            }
+          }
+        },
+        "expected": {
+          "type": "object",
+          "description": "What SHOULD have happened (for attack traces).",
+          "properties": {
+            "should_call": {"type": "boolean"},
+            "tool_name": {"type": "string"},
+            "arguments": {"type": "object", "additionalProperties": true}
+          }
+        },
+        "result": {
+          "type": "object",
+          "description": "Tool execution result (if available).",
+          "properties": {
+            "output": {"type": "string"},
+            "error": {"type": "string"},
+            "latency_ms": {"type": "number"}
+          }
+        }
+      }
+    }
+  }
+}

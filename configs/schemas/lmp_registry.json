@@ -1,0 +1,64 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "lmp_registry",
+  "title": "Loss Masking Policy Registry",
+  "description": "Registry of loss masking policies (LMPs) for CB training. Defines which tokens receive loss during training.",
+  "type": "object",
+  "required": ["version", "policies"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "description": "Registry version."
+    },
+    "default_policy": {
+      "type": "string",
+      "description": "Default policy ID to use when not specified."
+    },
+    "policies": {
+      "type": "object",
+      "description": "Map of policy_id -> policy definition.",
+      "additionalProperties": {
+        "$ref": "#/$defs/LMPPolicy"
+      }
+    }
+  },
+  "$defs": {
+    "LMPPolicy": {
+      "type": "object",
+      "required": ["name", "strategy"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Human-readable policy name."
+        },
+        "description": {
+          "type": "string",
+          "description": "What this policy does."
+        },
+        "strategy": {
+          "type": "string",
+          "enum": [
+            "assistant_only",
+            "completion_only",
+            "full_sequence",
+            "tool_calls_only",
+            "action_prefix_only",
+            "action_commitment",
+            "custom"
+          ],
+          "description": "Masking strategy."
+        },
+        "params": {
+          "type": "object",
+          "description": "Strategy-specific parameters.",
+          "additionalProperties": true
+        },
+        "compatible_with": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Categories this policy is designed for (e.g., ['harmful', 'benign'])."
+        }
+      }
+    }
+  }
+}

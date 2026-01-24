@@ -1,0 +1,150 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "mwcs_registry",
+  "title": "Mixture Weighting & Curriculum Schedule Registry",
+  "description": "Registry of MWCS configurations for CB training. Defines class weights and curriculum schedules.",
+  "type": "object",
+  "required": ["version", "schedules"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "description": "Registry version."
+    },
+    "default_schedule": {
+      "type": "string",
+      "description": "Default schedule ID to use when not specified."
+    },
+    "mixture_classes": {
+      "type": "object",
+      "description": "Definition of mixture classes that traces can belong to.",
+      "additionalProperties": {
+        "$ref": "#/$defs/MixtureClass"
+      }
+    },
+    "schedules": {
+      "type": "object",
+      "description": "Map of schedule_id -> schedule definition.",
+      "additionalProperties": {
+        "$ref": "#/$defs/MWCSSchedule"
+      }
+    }
+  },
+  "$defs": {
+    "MixtureClass": {
+      "type": "object",
+      "required": ["name", "category"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Human-readable class name."
+        },
+        "description": {
+          "type": "string"
+        },
+        "category": {
+          "type": "string",
+          "enum": ["harmful", "benign"],
+          "description": "Primary category (for CB loss: harmful -> reroute, benign -> retain)."
+        },
+        "source_datasets": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Which datasets this class draws from."
+        },
+        "default_lmp": {
+          "type": "string",
+          "description": "Default LMP policy for this class."
+        },
+        "requires_completeness": {
+          "type": "string",
+          "enum": ["skeleton", "complete", "any"],
+          "description": "Required completeness for traces in this class. 'complete' = must have assistant messages (default for training), 'skeleton' = prompts only, 'any' = either.",
+          "default": "complete"
+        },
+        "allowed_tiers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["B1", "B2"]
+          },
+          "description": "Which data tiers are allowed in this class. B1 = skeleton/incomplete, B2 = complete. Default: ['B2']."
+        },
+        "zero_loss_warning": {
+          "type": "boolean",
+          "description": "If true, warn when traces in this class would produce zero loss (e.g., skeleton with assistant_only LMP).",
+          "default": true
+        }
+      }
+    },
+    "MWCSSchedule": {
+      "type": "object",
+      "required": ["name", "class_weights"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Human-readable schedule name."
+        },
+        "description": {
+          "type": "string"
+        },
+        "class_weights": {
+          "type": "object",
+          "description": "Static weights per mixture class (used when no curriculum).",
+          "additionalProperties": {"type": "number"}
+        },
+        "curriculum": {
+          "type": "object",
+          "description": "Curriculum schedule (weights change over training).",
+          "$ref": "#/$defs/Curriculum"
+        },
+        "sampling_strategy": {
+          "type": "string",
+          "enum": ["proportional", "balanced", "temperature", "custom"],
+          "description": "How to sample from classes.",
+          "default": "proportional"
+        },
+        "sampling_params": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "Curriculum": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["none", "linear", "step", "cosine", "custom"],
+          "description": "Type of curriculum schedule."
+        },
+        "phases": {
+          "type": "array",
+          "description": "For step-based curriculum: phases with weights.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {"type": "string"},
+              "start_step": {"type": "integer"},
+              "end_step": {"type": "integer"},
+              "class_weights": {
+                "type": "object",
+                "additionalProperties": {"type": "number"}
+              },
+              "lmp_overrides": {
+                "type": "object",
+                "additionalProperties": {"type": "string"}
+              }
+            }
+          }
+        },
+        "interpolation": {
+          "type": "string",
+          "enum": ["none", "linear", "smooth"],
+          "description": "How to interpolate between phases.",
+          "default": "none"
+        }
+      }
+    }
+  }
+}

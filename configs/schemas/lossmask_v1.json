@@ -1,0 +1,144 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "lossmask_v1",
+  "title": "Loss Mask Schema v1",
+  "description": "Materialized per-token loss masks, derived from a render_v1 and an LMP policy.",
+  "type": "object",
+  "required": ["lossmask_id", "render_id", "trace_id", "policy_id", "loss_mask"],
+  "additionalProperties": false,
+  "properties": {
+    "lossmask_id": {
+      "type": "string",
+      "description": "Deterministic ID: lossmask_<policy>_<render_hash>",
+      "pattern": "^lossmask_[a-z0-9_-]+_[a-f0-9]{16,64}$"
+    },
+    "render_id": {
+      "type": "string",
+      "description": "ID of the source render (Tier C)."
+    },
+    "trace_id": {
+      "type": "string",
+      "description": "ID of the source trace (Tier B) for convenience."
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "policy_id": {
+      "type": "string",
+      "description": "LMP policy ID that generated this mask (e.g., 'assistant_only', 'action_prefix_only')."
+    },
+    "policy_version": {
+      "type": "string",
+      "description": "Version of the LMP policy."
+    },
+    "policy_params": {
+      "type": "object",
+      "description": "Parameters passed to the LMP policy.",
+      "additionalProperties": true
+    },
+    "loss_mask": {
+      "type": "array",
+      "items": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "description": "Per-token loss mask. Same length as input_ids. Values typically 0 or 1, but can be fractional for soft masking."
+    },
+    "labels": {
+      "type": "array",
+      "items": {"type": "integer"},
+      "description": "Target labels for LM training (shifted input_ids). -100 for masked positions."
+    },
+    "sample_weight": {
+      "type": "number",
+      "minimum": 0,
+      "default": 1.0,
+      "description": "Final sample weight after policy adjustments."
+    },
+    "stats": {
+      "type": "object",
+      "description": "Statistics about the mask.",
+      "additionalProperties": false,
+      "properties": {
+        "total_tokens": {"type": "integer"},
+        "masked_tokens": {"type": "integer"},
+        "unmasked_tokens": {"type": "integer"},
+        "mask_ratio": {"type": "number"}
+      }
+    },
+    "signal_derived": {
+      "type": "object",
+      "description": "Fields derived from render signals (injection spans, action commitments).",
+      "additionalProperties": false,
+      "properties": {
+        "injection_span_tokens": {
+          "type": "array",
+          "items": {"type": "integer"},
+          "description": "Token indices of the detected injection span (contiguous high-surprisal segment)."
+        },
+        "shock_score": {
+          "type": "object",
+          "description": "Shock metrics for the injection span.",
+          "properties": {
+            "max_surprisal": {"type": "number"},
+            "mean_surprisal": {"type": "number"},
+            "max_delta": {"type": "number"}
+          }
+        },
+        "action_prefix_end": {
+          "type": "integer",
+          "description": "Token index in assistant output where action becomes parse-valid/committed (guarantee_prefix_end)."
+        },
+        "guarantee_prefix_tokens": {
+          "type": "array",
+          "items": {"type": "integer"},
+          "description": "Token indices that form the guarantee_prefix (for Ds target)."
+        },
+        "commitment_type_used": {
+          "type": "string",
+          "description": "Type of commitment detection used to determine action_prefix_end."
+        },
+        "logprob_margin_at_commitment": {
+          "type": "number",
+          "description": "logP(bad_tool) - logP(expected_tool) at the commitment point."
+        }
+      }
+    },
+    "mask_regions": {
+      "type": "object",
+      "description": "Named regions in the mask for debugging/analysis.",
+      "additionalProperties": false,
+      "properties": {
+        "input_injection_region": {
+          "type": "object",
+          "description": "Region of the mask covering the injection span in input.",
+          "properties": {
+            "start": {"type": "integer"},
+            "end": {"type": "integer"},
+            "weight": {"type": "number"}
+          }
+        },
+        "output_commitment_region": {
+          "type": "object",
+          "description": "Region of the mask covering the guarantee_prefix in output.",
+          "properties": {
+            "start": {"type": "integer"},
+            "end": {"type": "integer"},
+            "weight": {"type": "number"}
+          }
+        },
+        "post_injection_region": {
+          "type": "object",
+          "description": "Region immediately after injection span (for shock-aware masking).",
+          "properties": {
+            "start": {"type": "integer"},
+            "end": {"type": "integer"},
+            "weight": {"type": "number"}
+          }
+        }
+      }
+    }
+  }
+}

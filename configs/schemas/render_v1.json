@@ -1,0 +1,304 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "render_v1",
+  "title": "Rendered View Schema v1",
+  "description": "Tokenizer/model-specific rendering of a trace. This is where apply_chat_template output lives.",
+  "type": "object",
+  "required": ["render_id", "trace_id", "tokenizer_id", "input_ids"],
+  "additionalProperties": false,
+  "properties": {
+    "render_id": {
+      "type": "string",
+      "description": "Deterministic ID: render_<model_short>_<trace_hash>_<options_hash>",
+      "pattern": "^render_[a-z0-9_-]+_[a-f0-9]{16,64}$"
+    },
+    "trace_id": {
+      "type": "string",
+      "description": "ID of the source trace (Tier B)."
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "tokenizer_id": {
+      "type": "string",
+      "description": "HuggingFace tokenizer identifier (e.g., 'meta-llama/Llama-3.1-8B-Instruct')."
+    },
+    "tokenizer_revision": {
+      "type": "string",
+      "description": "Git revision or version of the tokenizer."
+    },
+    "render_options": {
+      "type": "object",
+      "description": "Options used during rendering.",
+      "additionalProperties": false,
+      "properties": {
+        "chat_template_name": {
+          "type": "string",
+          "description": "Name of chat template used (e.g., 'default', 'tool_use').",
+          "default": "default"
+        },
+        "add_generation_prompt": {
+          "type": "boolean",
+          "description": "Whether to add generation prompt (should be false for training).",
+          "default": false
+        },
+        "tools_included": {
+          "type": "boolean",
+          "description": "Whether tools were included in rendering."
+        },
+        "tools_digest": {
+          "type": "string",
+          "description": "SHA256 digest of tool schema used during rendering."
+        },
+        "max_length": {
+          "type": "integer",
+          "description": "Max sequence length used for truncation."
+        },
+        "truncation_side": {
+          "type": "string",
+          "enum": ["left", "right"],
+          "default": "right"
+        }
+      }
+    },
+    "rendered_text": {
+      "type": "string",
+      "description": "The full rendered text with special tokens (optional, can be large)."
+    },
+    "input_ids": {
+      "type": "array",
+      "items": {"type": "integer"},
+      "description": "Token IDs from the tokenizer."
+    },
+    "attention_mask": {
+      "type": "array",
+      "items": {"type": "integer", "enum": [0, 1]},
+      "description": "Attention mask (1 = attend, 0 = ignore)."
+    },
+    "sequence_length": {
+      "type": "integer",
+      "description": "Length of the tokenized sequence."
+    },
+    "alignment": {
+      "type": "object",
+      "description": "Mapping from canonical message structure to token positions.",
+      "additionalProperties": false,
+      "properties": {
+        "message_spans": {
+          "type": "array",
+          "description": "Token span for each message in the trace.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "message_index": {"type": "integer"},
+              "role": {"type": "string"},
+              "token_start": {"type": "integer"},
+              "token_end": {"type": "integer"}
+            }
+          }
+        },
+        "assistant_spans": {
+          "type": "array",
+          "description": "Token spans for assistant completions only (for loss masking).",
+          "items": {
+            "type": "object",
+            "properties": {
+              "message_index": {"type": "integer"},
+              "token_start": {"type": "integer"},
+              "token_end": {"type": "integer"}
+            }
+          }
+        },
+        "tool_call_spans": {
+          "type": "array",
+          "description": "Token spans for tool calls within assistant messages.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "message_index": {"type": "integer"},
+              "call_index": {"type": "integer"},
+              "tool_name": {"type": "string"},
+              "token_start": {"type": "integer"},
+              "token_end": {"type": "integer"},
+              "name_token_end": {
+                "type": "integer",
+                "description": "Token position where tool name ends (for action commitment masking)."
+              }
+            }
+          }
+        }
+      }
+    },
+    "special_tokens": {
+      "type": "object",
+      "description": "Positions of special tokens in the sequence.",
+      "additionalProperties": false,
+      "properties": {
+        "bos_position": {"type": "integer"},
+        "eos_positions": {
+          "type": "array",
+          "items": {"type": "integer"}
+        },
+        "python_tag_positions": {
+          "type": "array",
+          "items": {"type": "integer"},
+          "description": "Positions of <|python_tag|> tokens."
+        }
+      }
+    },
+    "signals": {
+      "type": "object",
+      "description": "Computed signals for advanced loss masking (shock detection, action commitment).",
+      "additionalProperties": false,
+      "properties": {
+        "injection_spans": {
+          "type": "array",
+          "description": "Detected injection spans via surprisal/shock detection.",
+          "items": {
+            "$ref": "#/$defs/InjectionSpan"
+          }
+        },
+        "action_commitments": {
+          "type": "array",
+          "description": "Detected action commitment points in assistant output.",
+          "items": {
+            "$ref": "#/$defs/ActionCommitment"
+          }
+        },
+        "token_surprisals": {
+          "type": "array",
+          "items": {"type": "number"},
+          "description": "Per-token surprisal values (negative log prob). Same length as input_ids."
+        },
+        "detector_metadata": {
+          "type": "object",
+          "description": "Metadata about the detector(s) used to compute signals.",
+          "additionalProperties": true,
+          "properties": {
+            "shock_detector_id": {
+              "type": "string",
+              "description": "ID of shock detector used (e.g., 'ppl_contiguous_v2')."
+            },
+            "shock_detector_params": {
+              "type": "object",
+              "description": "Parameters used for shock detection.",
+              "additionalProperties": true
+            },
+            "commitment_detector_id": {
+              "type": "string",
+              "description": "ID of commitment detector used (e.g., 'toolcall_parse_valid_v1')."
+            },
+            "reference_model": {
+              "type": "string",
+              "description": "Model used for surprisal computation (if different from target)."
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "InjectionSpan": {
+      "type": "object",
+      "description": "A detected injection span with shock/surprisal metrics.",
+      "required": ["token_start", "token_end"],
+      "additionalProperties": false,
+      "properties": {
+        "token_start": {
+          "type": "integer",
+          "description": "Start token index of the injection span."
+        },
+        "token_end": {
+          "type": "integer",
+          "description": "End token index of the injection span (exclusive)."
+        },
+        "shock_score": {
+          "type": "object",
+          "description": "Shock/surprisal metrics for this span.",
+          "properties": {
+            "max_surprisal": {
+              "type": "number",
+              "description": "Maximum surprisal (neg log prob) in the span."
+            },
+            "mean_surprisal": {
+              "type": "number",
+              "description": "Mean surprisal across the span."
+            },
+            "max_delta": {
+              "type": "number",
+              "description": "Maximum delta between adjacent token surprisals (volatility)."
+            },
+            "span_length": {
+              "type": "integer",
+              "description": "Number of tokens in the span."
+            },
+            "percentile_rank": {
+              "type": "number",
+              "description": "Percentile rank of this span's shock score in the sequence."
+            }
+          }
+        },
+        "detection_method": {
+          "type": "string",
+          "enum": ["threshold", "percentile", "contiguous_threshold", "adaptive"],
+          "description": "Method used to detect this span."
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Confidence score for this detection."
+        }
+      }
+    },
+    "ActionCommitment": {
+      "type": "object",
+      "description": "A detected action commitment point in assistant output.",
+      "required": ["commitment_token_idx", "commit_type"],
+      "additionalProperties": false,
+      "properties": {
+        "assistant_message_index": {
+          "type": "integer",
+          "description": "Index of the assistant message containing this commitment."
+        },
+        "commitment_token_idx": {
+          "type": "integer",
+          "description": "Token index where action becomes guaranteed/committed. This is the 'guarantee_prefix_end'."
+        },
+        "commit_type": {
+          "type": "string",
+          "enum": [
+            "tool_name_selected",
+            "json_frame_parse_valid",
+            "logprob_margin",
+            "parse_unambiguous",
+            "custom"
+          ],
+          "description": "Type of commitment detection used."
+        },
+        "committed_tool": {
+          "type": "string",
+          "description": "The tool name that is committed to at this point."
+        },
+        "expected_tool": {
+          "type": "string",
+          "description": "The tool that SHOULD have been called (for computing margin)."
+        },
+        "logprob_margin": {
+          "type": "number",
+          "description": "logP(committed_tool) - logP(expected_tool) at commitment point."
+        },
+        "guarantee_prefix": {
+          "type": "string",
+          "description": "The assistant output prefix up to and including the commitment point."
+        },
+        "prefix_token_indices": {
+          "type": "array",
+          "items": {"type": "integer"},
+          "description": "Token indices that form the guarantee prefix (for loss masking)."
+        }
+      }
+    }
+  }
+}
