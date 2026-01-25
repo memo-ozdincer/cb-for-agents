@@ -66,6 +66,7 @@ echo ""
 # Configuration - MINIMAL TEST VERSION
 # =============================================================================
 INPUT_TRACES="${INPUT_TRACES:-$CB_SCRATCH/data/traces/fujitsu_b4_skeletons.jsonl}"
+DS_DATA="${DS_DATA:-$CB_SCRATCH/data/traces/fujitsu_b4_ds_minimal.jsonl}"
 OUTPUT_DIR="${OUTPUT_DIR:-$CB_SCRATCH/data/traces}"
 MODE="${MODE:-both}"
 MODEL="${MODEL:-meta-llama/Llama-3.1-8B-Instruct}"
@@ -90,7 +91,7 @@ N_OTHER_TOOL="${N_OTHER_TOOL:-5}"
 N_FORMAT_ERRORS="${N_FORMAT_ERRORS:-5}"
 
 # MINIMAL: Default to 2000 samples (override by setting LIMIT)
-LIMIT="${LIMIT:-2000}"
+LIMIT="${LIMIT:-300}"
 
 mkdir -p "$OUTPUT_DIR"
 
@@ -204,10 +205,25 @@ case "$MODE" in
 
     dr)
         echo "Generating DR (ignores_injection) - MINIMAL"
+        if [[ ! -f "$DS_DATA" ]]; then
+            echo "ERROR: DS data not found: $DS_DATA"
+            exit 1
+        fi
         python src/data_generation/generate_completions.py \
-            "${COMMON_ARGS[@]}" \
+            --ds-data "$DS_DATA" \
+            --model "$MODEL" \
+            --tool-schema "$TOOL_SCHEMA" \
+            --temperature-dr "$TEMPERATURE_DR" \
+            --max-tokens "$MAX_TOKENS" \
+            --limit "$LIMIT" \
             --mode dr \
             --output "$DR_OUTPUT" \
+            ${USE_VLLM:+--use-vllm} \
+            ${TENSOR_PARALLEL:+--tensor-parallel-size "$TENSOR_PARALLEL"} \
+            ${MAX_MODEL_LEN:+--max-model-len "$MAX_MODEL_LEN"} \
+            ${PRINT_EXAMPLES:+--print-examples} \
+            ${NO_TRUNCATE:+--no-truncate} \
+            ${NO_WRITE_IDS:+--no-write-ids} \
             ${EXAMPLES_OUT:+--examples-out "$EXAMPLES_OUT"}
         echo "DR output: $DR_OUTPUT ($(wc -l < "$DR_OUTPUT") lines)"
         ;;

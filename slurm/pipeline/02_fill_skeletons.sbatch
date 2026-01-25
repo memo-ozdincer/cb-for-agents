@@ -15,12 +15,16 @@
 #
 # This script:
 # 1. Takes B1 skeleton traces (no assistant messages)
-# 2. Generates DS (follows_injection) completions - harmful examples
-# 3. Generates DR (ignores_injection) completions - benign examples
+# 2. Generates DS (follows_injection) completions - harmful examples (observed == simulated)
+# 3. Generates DR (ignores_injection) from DS - benign examples (observed == expected)
 # 4. Outputs B2 complete traces ready for ETL_B
 #
+# Note: DR mode is downstream from DS. It takes successful DS flips, removes injection,
+# and regenerates. Use MODE=both for the full pipeline.
+#
 # Configuration via environment variables:
-#   INPUT_TRACES    - Input skeleton traces JSONL (default: fujitsu_b4_skeletons.jsonl)
+#   INPUT_TRACES    - Input skeleton traces JSONL for DS/both modes (default: fujitsu_b4_skeletons.jsonl)
+#   DS_DATA         - Input DS traces JSONL for DR mode (default: fujitsu_b4_ds.jsonl)
 #   OUTPUT_DIR      - Directory for output (default: $CB_SCRATCH/data/traces)
 #   MODE            - Generation mode: ds, dr, or both (default: both)
 #   MODEL           - Model to use (default: meta-llama/Llama-3.1-8B-Instruct)
@@ -109,6 +113,7 @@ echo ""
 # Configuration
 # =============================================================================
 INPUT_TRACES="${INPUT_TRACES:-$CB_SCRATCH/data/traces/fujitsu_b4_skeletons.jsonl}"
+DS_DATA="${DS_DATA:-$CB_SCRATCH/data/traces/fujitsu_b4_ds.jsonl}"
 OUTPUT_DIR="${OUTPUT_DIR:-$CB_SCRATCH/data/traces}"
 MODE="${MODE:-both}"
 MODEL="${MODEL:-meta-llama/Llama-3.1-8B-Instruct}"
@@ -138,6 +143,7 @@ mkdir -p "$OUTPUT_DIR"
 
 echo "Configuration:"
 echo "  INPUT_TRACES: $INPUT_TRACES"
+echo "  DS_DATA: $DS_DATA (for DR mode)"
 echo "  OUTPUT_DIR: $OUTPUT_DIR"
 echo "  MODE: $MODE"
 echo "  MODEL: $MODEL"
@@ -275,10 +281,34 @@ case "$MODE" in
         echo "Model ignores injection and calls correct tool (benign examples)"
         echo ""
 
+        if [[ ! -f "$DS_DATA" ]]; then
+            echo "ERROR: DS data not found: $DS_DATA"
+            echo "DR mode requires DS traces. Run MODE=ds first or use MODE=both."
+            exit 1
+        fi
+
         python src/data_generation/generate_completions.py \
-            "${COMMON_ARGS[@]}" \
+            --ds-data "$DS_DATA" \
+            --model "$MODEL" \
+            --tool-schema "$TOOL_SCHEMA" \
+            --temperature-dr "$TEMPERATURE_DR" \
+            --max-tokens "$MAX_TOKENS" \
             --mode dr \
             --output "$DR_OUTPUT" \
+            ${USE_VLLM:+--use-vllm} \
+            ${TENSOR_PARALLEL:+--tensor-parallel-size "$TENSOR_PARALLEL"} \
+            ${MAX_MODEL_LEN:+--max-model-len "$MAX_MODEL_LEN"} \
+            ${BATCH_SIZE:+--batch-size "$BATCH_SIZE"} \
+            ${LIMIT:+--limit "$LIMIT"} \
+            ${PRINT_EXAMPLES:+--print-examples} \
+            ${NO_TRUNCATE:+--no-truncate} \
+            ${NO_WRITE_IDS:+--no-write-ids} \
+            --n-successful "$N_SUCCESSFUL" \
+            --n-correct "$N_CORRECT" \
+            --n-wrong-tool "$N_WRONG_TOOL" \
+            --n-no-tool "$N_NO_TOOL" \
+            --n-other-tool "$N_OTHER_TOOL" \
+            --n-format-errors "$N_FORMAT_ERRORS" \
             ${EXAMPLES_OUT:+--examples-out "$EXAMPLES_OUT"}
 
         echo ""
