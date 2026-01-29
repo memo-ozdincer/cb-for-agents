@@ -107,10 +107,50 @@ echo ""
 # Configuration
 # =============================================================================
 DATA_MODE="${DATA_MODE:-ds_dr}"
-DS_RENDERS="${DS_RENDERS:-$CB_SCRATCH/data/renders/fujitsu_b4_ds.jsonl}"
-DS_LOSSMASKS="${DS_LOSSMASKS:-$CB_SCRATCH/data/lossmasks/fujitsu_b4_ds.jsonl}"
-DR_RENDERS="${DR_RENDERS:-$CB_SCRATCH/data/renders/fujitsu_b4_dr.jsonl}"
-DR_LOSSMASKS="${DR_LOSSMASKS:-$CB_SCRATCH/data/lossmasks/fujitsu_b4_dr.jsonl}"
+
+# Auto-discover render/lossmask files if not explicitly set
+if [[ -z "${DS_RENDERS:-}" ]]; then
+    # DS (harmful) renders: fujitsu_b4_ds
+    if [[ -f "$CB_SCRATCH/data/renders/fujitsu_b4_ds.jsonl" ]]; then
+        DS_RENDERS="$CB_SCRATCH/data/renders/fujitsu_b4_ds.jsonl"
+    fi
+fi
+if [[ -z "${DS_LOSSMASKS:-}" ]]; then
+    if [[ -f "$CB_SCRATCH/data/lossmasks/fujitsu_b4_ds.jsonl" ]]; then
+        DS_LOSSMASKS="$CB_SCRATCH/data/lossmasks/fujitsu_b4_ds.jsonl"
+    fi
+fi
+if [[ -z "${DR_RENDERS:-}" ]]; then
+    # DR (benign) renders: fujitsu_b4_dr
+    if [[ -f "$CB_SCRATCH/data/renders/fujitsu_b4_dr.jsonl" ]]; then
+        DR_RENDERS="$CB_SCRATCH/data/renders/fujitsu_b4_dr.jsonl"
+    fi
+fi
+if [[ -z "${DR_LOSSMASKS:-}" ]]; then
+    if [[ -f "$CB_SCRATCH/data/lossmasks/fujitsu_b4_dr.jsonl" ]]; then
+        DR_LOSSMASKS="$CB_SCRATCH/data/lossmasks/fujitsu_b4_dr.jsonl"
+    fi
+fi
+
+# Auto-discover AgentDojo (uses labeled mode or mixed mode)
+AGENTDOJO_RENDERS=""
+AGENTDOJO_LOSSMASKS=""
+AGENTDOJO_TRACES=""
+if [[ -f "$CB_SCRATCH/data/renders/agentdojo_complete.jsonl" ]]; then
+    AGENTDOJO_RENDERS="$CB_SCRATCH/data/renders/agentdojo_complete.jsonl"
+fi
+if [[ -f "$CB_SCRATCH/data/lossmasks/agentdojo_complete.jsonl" ]]; then
+    AGENTDOJO_LOSSMASKS="$CB_SCRATCH/data/lossmasks/agentdojo_complete.jsonl"
+fi
+if [[ -f "$CB_SCRATCH/data/traces/agentdojo_complete.jsonl" ]]; then
+    AGENTDOJO_TRACES="$CB_SCRATCH/data/traces/agentdojo_complete.jsonl"
+fi
+
+# Defaults (empty if not found)
+DS_RENDERS="${DS_RENDERS:-}"
+DS_LOSSMASKS="${DS_LOSSMASKS:-}"
+DR_RENDERS="${DR_RENDERS:-}"
+DR_LOSSMASKS="${DR_LOSSMASKS:-}"
 OUTPUT_DIR="${OUTPUT_DIR:-$CB_SCRATCH/models/cb_train_$(date +%Y%m%d_%H%M%S)}"
 
 # Model configuration
@@ -220,15 +260,15 @@ fi
 case "$DATA_MODE" in
     ds_dr)
         echo "Data mode: DS/DR (DS=harmful, DR=benign)"
-        echo "  DS Renders: $DS_RENDERS"
-        echo "  DS Lossmasks: $DS_LOSSMASKS"
-        echo "  DR Renders: $DR_RENDERS"
-        echo "  DR Lossmasks: $DR_LOSSMASKS"
+        echo "  DS Renders: ${DS_RENDERS:-<not found>}"
+        echo "  DS Lossmasks: ${DS_LOSSMASKS:-<not found>}"
+        echo "  DR Renders: ${DR_RENDERS:-<not found>}"
+        echo "  DR Lossmasks: ${DR_LOSSMASKS:-<not found>}"
 
         # Validate files exist
         for f in "$DS_RENDERS" "$DS_LOSSMASKS" "$DR_RENDERS" "$DR_LOSSMASKS"; do
-            if [[ ! -f "$f" ]]; then
-                echo "ERROR: Required file not found: $f"
+            if [[ -z "$f" || ! -f "$f" ]]; then
+                echo "ERROR: Required file not found: ${f:-<empty>}"
                 echo "Please run stages 1-3 first or set correct paths."
                 exit 1
             fi
@@ -241,6 +281,20 @@ case "$DATA_MODE" in
             --dr-renders "$DR_RENDERS"
             --dr-lossmasks "$DR_LOSSMASKS"
         )
+
+        # If AgentDojo data also exists, add it via additional args
+        if [[ -n "$AGENTDOJO_RENDERS" && -n "$AGENTDOJO_LOSSMASKS" && -n "$AGENTDOJO_TRACES" ]]; then
+            echo ""
+            echo "  AgentDojo data found - adding to training:"
+            echo "    Renders: $AGENTDOJO_RENDERS"
+            echo "    Lossmasks: $AGENTDOJO_LOSSMASKS"
+            echo "    Traces: $AGENTDOJO_TRACES"
+            TRAIN_ARGS+=(
+                --additional-renders "$AGENTDOJO_RENDERS"
+                --additional-lossmasks "$AGENTDOJO_LOSSMASKS"
+                --additional-traces "$AGENTDOJO_TRACES"
+            )
+        fi
         ;;
 
     labeled)
