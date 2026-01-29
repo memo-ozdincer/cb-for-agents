@@ -96,8 +96,22 @@ echo ""
 # =============================================================================
 # Configuration
 # =============================================================================
-# Default to processing all generated traces (DS and DR)
-INPUT_TRACES="${INPUT_TRACES:-$CB_SCRATCH/data/traces/fujitsu_b4_ds.jsonl,$CB_SCRATCH/data/traces/fujitsu_b4_dr.jsonl}"
+# Auto-discover trace files if INPUT_TRACES not explicitly set
+if [[ -z "${INPUT_TRACES:-}" ]]; then
+    DISCOVERED_TRACES=""
+    # Fujitsu B4 DS/DR traces
+    if [[ -f "$CB_SCRATCH/data/traces/fujitsu_b4_ds.jsonl" ]]; then
+        DISCOVERED_TRACES="$CB_SCRATCH/data/traces/fujitsu_b4_ds.jsonl"
+    fi
+    if [[ -f "$CB_SCRATCH/data/traces/fujitsu_b4_dr.jsonl" ]]; then
+        DISCOVERED_TRACES="${DISCOVERED_TRACES:+$DISCOVERED_TRACES,}$CB_SCRATCH/data/traces/fujitsu_b4_dr.jsonl"
+    fi
+    # AgentDojo complete traces
+    if [[ -f "$CB_SCRATCH/data/traces/agentdojo_complete.jsonl" ]]; then
+        DISCOVERED_TRACES="${DISCOVERED_TRACES:+$DISCOVERED_TRACES,}$CB_SCRATCH/data/traces/agentdojo_complete.jsonl"
+    fi
+    INPUT_TRACES="$DISCOVERED_TRACES"
+fi
 OUTPUT_DIR="${OUTPUT_DIR:-$CB_SCRATCH/data}"
 TOKENIZER="${TOKENIZER:-meta-llama/Llama-3.1-8B-Instruct}"
 MAX_LENGTH="${MAX_LENGTH:-4096}"
