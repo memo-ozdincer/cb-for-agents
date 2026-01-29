@@ -1155,7 +1155,7 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
+    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, local_files_only=True)
     chat_template = args.chat_template
     if chat_template and Path(chat_template).exists():
         chat_template = Path(chat_template).read_text()
