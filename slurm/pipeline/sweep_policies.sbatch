@@ -3,7 +3,7 @@
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=24
-#SBATCH --time=11:00:00
+#SBATCH --time=5:00:00
 #SBATCH --output=/scratch/memoozd/cb-scratch/logs/%x_%j.out
 #SBATCH --error=/scratch/memoozd/cb-scratch/logs/%x_%j.err
 #SBATCH --account=def-zhijing
@@ -67,16 +67,33 @@ echo "  DR: $(wc -l < "$DR_TRACES") lines"
 echo "  AgentDojo: $(wc -l < "$AGENTDOJO_TRACES") lines"
 echo ""
 
-# Resolve tokenizer to local cache path
+# Resolve tokenizer to local cache path to avoid offline mode issues
 TOKENIZER="meta-llama/Llama-3.1-8B-Instruct"
+echo "Attempting to resolve tokenizer '$TOKENIZER' to local cache path..."
+
+# Try standard HF cache pattern: models--org--repo
 CACHE_MODEL_NAME="models--${TOKENIZER//\//--}"
 SNAPSHOT_ROOT="$HF_HUB_CACHE/$CACHE_MODEL_NAME/snapshots"
+
+# Fallback: maybe the directory exists directly without models-- prefix?
+if [[ ! -d "$SNAPSHOT_ROOT" ]]; then
+    if [[ -d "$HF_HUB_CACHE/$TOKENIZER/snapshots" ]]; then
+        SNAPSHOT_ROOT="$HF_HUB_CACHE/$TOKENIZER/snapshots"
+    fi
+fi
+
 if [[ -d "$SNAPSHOT_ROOT" ]]; then
     SNAPSHOT_PATH=$(ls -1td "$SNAPSHOT_ROOT"/* 2>/dev/null | head -n 1)
     if [[ -n "$SNAPSHOT_PATH" ]]; then
+        echo "  Found local snapshot: $SNAPSHOT_PATH"
         TOKENIZER="$SNAPSHOT_PATH"
-        echo "Using cached tokenizer: $TOKENIZER"
+    else
+        echo "  WARNING: Snapshot directory exists but is empty: $SNAPSHOT_ROOT"
     fi
+else
+    echo "  WARNING: Could not find snapshots in $HF_HUB_CACHE"
+    echo "  Checked: $SNAPSHOT_ROOT"
+    echo "  Run slurm/cache_models.sh on login node first!"
 fi
 echo ""
 

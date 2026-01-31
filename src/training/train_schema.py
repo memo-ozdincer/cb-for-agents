@@ -452,7 +452,7 @@ def train(
         logger.info("  Target layers: %s", config.cb_target_layers)
 
     # Load tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(config.base_model)
+    tokenizer = AutoTokenizer.from_pretrained(config.base_model, local_files_only=True)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
@@ -464,6 +464,7 @@ def train(
         config.base_model,
         torch_dtype=getattr(torch, config.torch_dtype),
         device_map={"": device} if not is_distributed else None,
+        local_files_only=True,
     )
 
     # Add LoRA
