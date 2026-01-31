@@ -484,6 +484,12 @@ def train(
     )
     model = get_peft_model(model, lora_config)
 
+    if config.gradient_checkpointing:
+        model.gradient_checkpointing_enable()
+        if hasattr(model, "enable_input_require_grads"):
+            model.enable_input_require_grads()
+        model.config.use_cache = False  # GC is incompatible with caching
+
     if is_main:
         model.print_trainable_parameters()
 
