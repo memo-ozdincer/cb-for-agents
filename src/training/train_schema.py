@@ -515,7 +515,7 @@ def train(
         shuffle=(sampler is None),
         sampler=sampler,
         num_workers=4,
-        pin_memory=True,
+        pin_memory=False,  # Disabled to prevent shared memory issues on cluster
     )
 
     # Optimizer and scheduler
