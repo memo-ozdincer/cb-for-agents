@@ -514,8 +514,8 @@ def train(
         batch_size=config.batch_size,
         shuffle=(sampler is None),
         sampler=sampler,
-        num_workers=4,
-        pin_memory=False,  # Disabled to prevent shared memory issues on cluster
+        num_workers=0,  # Run in main process to avoid shared memory/resize errors
+        pin_memory=False,
     )
 
     # Optimizer and scheduler
