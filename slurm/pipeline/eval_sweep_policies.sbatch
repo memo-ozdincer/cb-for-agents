@@ -87,7 +87,7 @@ BASELINE_MODEL="${BASELINE_MODEL:-meta-llama/Llama-3.1-8B-Instruct}"
 EVAL_DATASETS="${EVAL_DATASETS:-fujitsu,agentdojo}"
 TOOL_SCHEMA="${TOOL_SCHEMA:-$REPO_DIR/configs/tool_schemas/b4_standard_v1.json}"
 LIMIT="${LIMIT:-}"
-SHOW_EXAMPLES="${SHOW_EXAMPLES:-false}"
+SHOW_EXAMPLES="${SHOW_EXAMPLES:-true}"
 NUM_EXAMPLES="${NUM_EXAMPLES:-5}"
 DTYPE="${DTYPE:-bfloat16}"
 
