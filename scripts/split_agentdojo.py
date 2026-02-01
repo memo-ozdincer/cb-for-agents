@@ -12,7 +12,7 @@ Renders and lossmasks are split by looking up trace_id in the traces labels.
 import argparse
 import json
 from pathlib import Path
-from typing import Dict, Set
+from typing import Dict
 
 
 def load_trace_labels(traces_path: Path) -> Dict[str, bool]:
@@ -24,14 +24,20 @@ def load_trace_labels(traces_path: Path) -> Dict[str, bool]:
                 continue
             row = json.loads(line)
             trace_id = row.get("id") or row.get("trace_id")
-            is_harmful = row.get("labels", {}).get("is_harmful", False)
+            # Check both is_harmful (boolean) and category (string) for compatibility
+            trace_labels = row.get("labels", {})
+            if "is_harmful" in trace_labels:
+                is_harmful = trace_labels.get("is_harmful", False)
+            else:
+                # AgentDojo uses labels.category = "harmful" | "benign"
+                is_harmful = trace_labels.get("category") == "harmful"
             if trace_id:
                 labels[trace_id] = is_harmful
     return labels
 
 
 def split_traces(input_path: Path, harmful_out: Path, benign_out: Path) -> tuple:
-    """Split traces file by labels.is_harmful."""
+    """Split traces file by labels.category or labels.is_harmful."""
     harmful_count = 0
     benign_count = 0
 
@@ -44,7 +50,13 @@ def split_traces(input_path: Path, harmful_out: Path, benign_out: Path) -> tuple
                 continue
 
             row = json.loads(line)
-            is_harmful = row.get("labels", {}).get("is_harmful", False)
+            trace_labels = row.get("labels", {})
+            # Check both is_harmful (boolean) and category (string) for compatibility
+            if "is_harmful" in trace_labels:
+                is_harmful = trace_labels.get("is_harmful", False)
+            else:
+                # AgentDojo uses labels.category = "harmful" | "benign"
+                is_harmful = trace_labels.get("category") == "harmful"
 
             if is_harmful:
                 f_harmful.write(line)
