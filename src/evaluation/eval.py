@@ -320,11 +320,16 @@ def _evaluate_model_on_samples(
     if tool_flip["total_samples"] == 0 and len(eval_samples) > 0:
         if verbose:
             logger.info("No tool-flip samples found, running generation comparison...")
+            # Debug: check if samples have messages
+            samples_with_messages = sum(1 for s in eval_samples if s.get("messages"))
+            logger.info(f"  Samples with messages: {samples_with_messages}/{len(eval_samples)}")
         generation_comparison = evaluate_generation_comparison(
             model, tokenizer, eval_samples, tools, system_prompt,
             model_name="cb_model" if adapter_path else "baseline",
             verbose=verbose
         )
+        if verbose:
+            logger.info(f"  Generation comparison produced {generation_comparison['total_samples']} results")
 
     forced_call = evaluate_forced_function_call(
         model, tokenizer, eval_samples, tools, system_prompt, verbose
@@ -1058,12 +1063,24 @@ def build_generation_paired_outputs(
     baseline_details = baseline_results.get("details", [])
     cb_details = cb_results.get("details", [])
 
-    cb_by_id = {d.get("id"): d for d in cb_details}
+    # Debug: check for None IDs
+    baseline_none_ids = sum(1 for d in baseline_details if d.get("id") is None)
+    cb_none_ids = sum(1 for d in cb_details if d.get("id") is None)
+    if baseline_none_ids > 0 or cb_none_ids > 0:
+        logger.warning(f"Generation pairing: {baseline_none_ids}/{len(baseline_details)} baseline and "
+                      f"{cb_none_ids}/{len(cb_details)} CB samples have None IDs")
+
+    cb_by_id = {d.get("id"): d for d in cb_details if d.get("id") is not None}
     paired = []
+    unmatched = 0
     for b in baseline_details:
         b_id = b.get("id")
+        if b_id is None:
+            unmatched += 1
+            continue
         c = cb_by_id.get(b_id)
         if c is None:
+            unmatched += 1
             continue
 
         # Determine outcome based on whether responses differ
@@ -1083,6 +1100,10 @@ def build_generation_paired_outputs(
             "baseline_response": b_resp,
             "cb_response": c_resp,
         })
+
+    if unmatched > 0:
+        logger.warning(f"Generation pairing: {unmatched} samples could not be paired (missing or mismatched IDs)")
+
     return paired
 
 
@@ -1527,18 +1548,31 @@ def main():
             paired_path = args.output.with_suffix('.paired_outputs.jsonl')
 
             # Use tool_flip if available, otherwise use generation_comparison
-            if results["baseline"]["tool_flip_asr"]["total_samples"] > 0:
+            baseline_tool_samples = results["baseline"]["tool_flip_asr"]["total_samples"]
+            has_baseline_gen = "generation_comparison" in results["baseline"]
+            has_cb_gen = "generation_comparison" in results["cb_model"]
+
+            logger.info(f"Paired output selection: tool_flip_samples={baseline_tool_samples}, "
+                       f"baseline_gen_compare={has_baseline_gen}, cb_gen_compare={has_cb_gen}")
+
+            if baseline_tool_samples > 0:
                 paired = build_paired_outputs(
                     results["baseline"]["tool_flip_asr"],
                     results["cb_model"]["tool_flip_asr"],
                 )
-            elif "generation_comparison" in results["baseline"] and "generation_comparison" in results["cb_model"]:
+                logger.info(f"Built {len(paired)} pairs from tool_flip")
+            elif has_baseline_gen and has_cb_gen:
                 # Build paired from generation_comparison
+                baseline_gen_count = results["baseline"]["generation_comparison"]["total_samples"]
+                cb_gen_count = results["cb_model"]["generation_comparison"]["total_samples"]
+                logger.info(f"Building pairs from generation_comparison: baseline={baseline_gen_count}, cb={cb_gen_count}")
                 paired = build_generation_paired_outputs(
                     results["baseline"]["generation_comparison"],
                     results["cb_model"]["generation_comparison"],
                 )
+                logger.info(f"Built {len(paired)} pairs from generation_comparison")
             else:
+                logger.warning("No paired outputs available - neither tool_flip nor generation_comparison data")
                 paired = []
 
             with open(paired_path, "w", encoding="utf-8") as f:
