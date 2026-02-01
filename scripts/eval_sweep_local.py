@@ -3,8 +3,14 @@
 Evaluate models from a sweep_policies run locally (without SLURM).
 
 Usage:
-    # Evaluate all policies in a sweep
+    # Evaluate all policies on both fujitsu and agentdojo
     python scripts/eval_sweep_local.py --sweep-dir /path/to/sweep
+
+    # Evaluate only on agentdojo
+    python scripts/eval_sweep_local.py --sweep-dir /path/to/sweep --datasets agentdojo
+
+    # Evaluate only on fujitsu
+    python scripts/eval_sweep_local.py --sweep-dir /path/to/sweep --datasets fujitsu
 
     # Quick test with limit
     python scripts/eval_sweep_local.py --sweep-dir /path/to/sweep --limit 20
@@ -48,6 +54,36 @@ def get_adapter_path(sweep_dir: Path, policy: str) -> Path:
     if (model_dir / "adapter_config.json").exists():
         return model_dir
     raise ValueError(f"No adapter found for policy {policy}")
+
+
+def get_dataset_path(dataset: str, sweep_dir: Path, policy: str) -> Path:
+    """Get the path to evaluation data for a dataset."""
+    if dataset == "fujitsu":
+        candidates = [
+            PROJECT_ROOT / "data" / "traces" / "fujitsu_b4_ds.jsonl",
+            PROJECT_ROOT / "data" / "traces" / "fujitsu_b4_traces.jsonl",
+            PROJECT_ROOT / "data" / "cb_mvp" / "eval_stage1.jsonl",
+        ]
+    elif dataset == "agentdojo":
+        # Prefer the split harmful traces from the sweep
+        split_path = sweep_dir / policy / "agentdojo_split" / "agentdojo_traces_harmful.jsonl"
+        if split_path.exists():
+            return split_path
+        candidates = [
+            PROJECT_ROOT / "data" / "traces" / "agentdojo_traces.jsonl",
+        ]
+    elif dataset == "agentdojo_all":
+        candidates = [
+            PROJECT_ROOT / "data" / "traces" / "agentdojo_traces.jsonl",
+        ]
+    else:
+        raise ValueError(f"Unknown dataset: {dataset}")
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    raise ValueError(f"Could not find data for dataset {dataset}")
 
 
 def show_example_traces(details_file: Path, n: int = 5):
@@ -110,6 +146,12 @@ def main():
         help="Evaluate only this policy (default: all policies)",
     )
     parser.add_argument(
+        "--datasets",
+        type=str,
+        default="fujitsu,agentdojo",
+        help="Comma-separated datasets to evaluate on (default: fujitsu,agentdojo)",
+    )
+    parser.add_argument(
         "--baseline",
         type=str,
         default="meta-llama/Llama-3.1-8B-Instruct",
@@ -119,7 +161,7 @@ def main():
         "--eval-data",
         type=Path,
         default=None,
-        help="Evaluation data JSONL (default: auto-detect)",
+        help="Evaluation data JSONL (overrides --datasets)",
     )
     parser.add_argument(
         "--tool-schema",
@@ -176,23 +218,16 @@ def main():
 
     print(f"Found {len(policies)} policies to evaluate: {', '.join(policies)}")
 
-    # Auto-detect eval data if not specified
-    eval_data = args.eval_data
-    if eval_data is None:
-        # Try common locations
-        candidates = [
-            PROJECT_ROOT / "data" / "traces" / "fujitsu_b4_ds.jsonl",
-            PROJECT_ROOT / "data" / "cb_mvp" / "eval_stage1.jsonl",
-        ]
-        for candidate in candidates:
-            if candidate.exists():
-                eval_data = candidate
-                break
-        if eval_data is None:
-            print("ERROR: Could not auto-detect eval data. Use --eval-data")
-            return 1
+    # Parse datasets
+    if args.eval_data:
+        # User provided explicit eval data, use single "custom" dataset
+        datasets = ["custom"]
+        dataset_paths = {"custom": args.eval_data}
+    else:
+        datasets = [d.strip() for d in args.datasets.split(",")]
+        dataset_paths = {}  # Will be resolved per-policy
 
-    print(f"Using eval data: {eval_data}")
+    print(f"Datasets to evaluate: {', '.join(datasets)}")
 
     # Output directory
     output_dir = args.output_dir or (args.sweep_dir / "evaluations")
@@ -202,7 +237,8 @@ def main():
     from src.evaluation.eval import run_mvp_evaluation
     import torch
 
-    results_summary = []
+    # results_summary[dataset] = [list of policy results]
+    results_summary = {ds: [] for ds in datasets}
 
     for policy in policies:
         print(f"\n{'='*60}")
@@ -215,89 +251,117 @@ def main():
             print(f"  SKIP: {e}")
             continue
 
-        output_file = output_dir / f"{policy}_eval.json"
-
         print(f"  Adapter: {adapter_path}")
-        print(f"  Output: {output_file}")
 
-        # Load eval samples
-        eval_samples = []
-        with open(eval_data) as f:
-            for line in f:
-                if line.strip():
-                    eval_samples.append(json.loads(line))
-                    if args.limit and len(eval_samples) >= args.limit:
-                        break
+        # Evaluate on each dataset
+        for dataset in datasets:
+            # Get dataset path
+            if dataset in dataset_paths:
+                eval_data = dataset_paths[dataset]
+            else:
+                try:
+                    eval_data = get_dataset_path(dataset, args.sweep_dir, policy)
+                except ValueError as e:
+                    print(f"  SKIP {dataset}: {e}")
+                    continue
 
-        print(f"  Samples: {len(eval_samples)}")
+            if not eval_data.exists():
+                print(f"  SKIP {dataset}: File not found: {eval_data}")
+                continue
 
-        # Run evaluation
-        results = run_mvp_evaluation(
-            baseline_model_path=args.baseline,
-            cb_model_path=None,
-            cb_adapter_path=str(adapter_path),
-            eval_data_path=eval_data,
-            tool_schema_path=args.tool_schema,
-            device=args.device,
-            torch_dtype=torch.bfloat16,
-            verbose=not args.quiet,
-            eval_samples=eval_samples,
-        )
+            output_file = output_dir / f"{policy}_{dataset}_eval.json"
 
-        # Save results
-        with open(output_file, "w") as f:
-            json.dump(results, f, indent=2, default=str)
+            print(f"\n  Dataset: {dataset}")
+            print(f"    Data: {eval_data}")
+            print(f"    Output: {output_file}")
 
-        # Save details separately
-        details_file = output_file.with_suffix(".details.jsonl")
-        with open(details_file, "w") as f:
-            for key in ["baseline", "cb_model"]:
-                if key in results:
-                    for metric_key in ["tool_flip_asr", "forced_function_call", "capability_retention"]:
-                        if metric_key in results[key] and "details" in results[key][metric_key]:
-                            for detail in results[key][metric_key]["details"]:
-                                record = {"model": key, "metric": metric_key, **detail}
-                                f.write(json.dumps(record, default=str) + "\n")
+            # Load eval samples
+            eval_samples = []
+            with open(eval_data) as f:
+                for line in f:
+                    if line.strip():
+                        eval_samples.append(json.loads(line))
+                        if args.limit and len(eval_samples) >= args.limit:
+                            break
 
-        # Collect summary
-        cb_asr = results.get("cb_model", {}).get("tool_flip_asr", {}).get("attack_success_rate", -1)
-        baseline_asr = results.get("baseline", {}).get("tool_flip_asr", {}).get("attack_success_rate", -1)
-        capability = results.get("cb_model", {}).get("capability_retention", {}).get("capability_retention", -1)
-        passed = results.get("stage1_passed", False)
+            print(f"    Samples: {len(eval_samples)}")
 
-        results_summary.append({
-            "policy": policy,
-            "baseline_asr": baseline_asr,
-            "cb_asr": cb_asr,
-            "capability": capability,
-            "passed": passed,
-        })
+            # Run evaluation
+            results = run_mvp_evaluation(
+                baseline_model_path=args.baseline,
+                cb_model_path=None,
+                cb_adapter_path=str(adapter_path),
+                eval_data_path=eval_data,
+                tool_schema_path=args.tool_schema,
+                device=args.device,
+                torch_dtype=torch.bfloat16,
+                verbose=not args.quiet,
+                eval_samples=eval_samples,
+            )
 
-        # Show examples if requested
-        if args.show_examples > 0:
-            show_example_traces(details_file, args.show_examples)
+            # Save results
+            with open(output_file, "w") as f:
+                json.dump(results, f, indent=2, default=str)
 
-    # Print summary comparison
+            # Save details separately
+            details_file = output_file.with_suffix(".details.jsonl")
+            with open(details_file, "w") as f:
+                for key in ["baseline", "cb_model"]:
+                    if key in results:
+                        for metric_key in ["tool_flip_asr", "forced_function_call", "capability_retention"]:
+                            if metric_key in results[key] and "details" in results[key][metric_key]:
+                                for detail in results[key][metric_key]["details"]:
+                                    record = {"model": key, "metric": metric_key, **detail}
+                                    f.write(json.dumps(record, default=str) + "\n")
+
+            # Collect summary
+            cb_asr = results.get("cb_model", {}).get("tool_flip_asr", {}).get("attack_success_rate", -1)
+            baseline_asr = results.get("baseline", {}).get("tool_flip_asr", {}).get("attack_success_rate", -1)
+            capability = results.get("cb_model", {}).get("capability_retention", {}).get("capability_retention", -1)
+            total_samples = results.get("cb_model", {}).get("tool_flip_asr", {}).get("total_samples", 0)
+            passed = results.get("stage1_passed", False)
+
+            results_summary[dataset].append({
+                "policy": policy,
+                "baseline_asr": baseline_asr,
+                "cb_asr": cb_asr,
+                "capability": capability,
+                "samples": total_samples,
+                "passed": passed,
+            })
+
+            # Show examples if requested
+            if args.show_examples > 0:
+                show_example_traces(details_file, args.show_examples)
+
+    # Print summary comparison per dataset
     print(f"\n{'='*60}")
     print("SWEEP EVALUATION SUMMARY")
     print("=" * 60)
 
-    # Sort by CB ASR (lower is better)
-    results_summary.sort(key=lambda x: x["cb_asr"] if x["cb_asr"] >= 0 else float("inf"))
+    for dataset in datasets:
+        if not results_summary[dataset]:
+            continue
 
-    print(f"\n{'Policy':<25} {'Baseline ASR':>12} {'CB ASR':>10} {'Capability':>12} {'Stage1':>8}")
-    print("-" * 70)
+        print(f"\nDataset: {dataset}")
+        print("-" * 60)
 
-    for r in results_summary:
-        baseline = f"{r['baseline_asr']:.1%}" if r["baseline_asr"] >= 0 else "N/A"
-        cb = f"{r['cb_asr']:.1%}" if r["cb_asr"] >= 0 else "N/A"
-        cap = f"{r['capability']:.1%}" if r["capability"] >= 0 else "N/A"
-        status = "✅" if r["passed"] else "❌"
-        print(f"{r['policy']:<25} {baseline:>12} {cb:>10} {cap:>12} {status:>8}")
+        # Sort by CB ASR (lower is better)
+        summary = sorted(results_summary[dataset], key=lambda x: x["cb_asr"] if x["cb_asr"] >= 0 else float("inf"))
 
-    if results_summary:
-        best = results_summary[0]
-        print(f"\nBest policy by ASR: {best['policy']} ({best['cb_asr']:.1%})")
+        print(f"{'Policy':<20} {'Baseline':>10} {'CB ASR':>10} {'Samples':>8} {'Capability':>12} {'Gate':>6}")
+        print("-" * 70)
+
+        for r in summary:
+            baseline = f"{r['baseline_asr']:.1%}" if r["baseline_asr"] >= 0 else "N/A"
+            cb = f"{r['cb_asr']:.1%}" if r["cb_asr"] >= 0 else "N/A"
+            cap = f"{r['capability']:.1%}" if r["capability"] >= 0 else "N/A"
+            status = "✅" if r["passed"] else "❌"
+            print(f"{r['policy']:<20} {baseline:>10} {cb:>10} {r['samples']:>8} {cap:>12} {status:>6}")
+
+        if summary:
+            best = summary[0]
+            print(f"\nBest policy: {best['policy']} ({best['cb_asr']:.1%})")
 
     print(f"\nResults saved to: {output_dir}")
     return 0
