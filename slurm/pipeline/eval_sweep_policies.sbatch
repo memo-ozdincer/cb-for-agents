@@ -259,6 +259,9 @@ if 'stage1_passed' in results:
             PAIRED_FILE="${OUTPUT_FILE%.json}.paired_outputs.jsonl"
             if [[ -f "$PAIRED_FILE" ]]; then
                 echo ""
+                echo "    ========================================"
+                echo "    PAIRED EXAMPLES: $policy on $dataset"
+                echo "    ========================================"
                 python3 -c "
 import json
 
@@ -283,10 +286,11 @@ if is_gen_compare:
         b_tool = p.get('baseline_observed_tool') or 'none'
         c_tool = p.get('cb_observed_tool') or 'none'
         print(f'    [{i}] {cat}: baseline={b_tool} -> cb={c_tool}')
-        b_resp = (p.get('baseline_response') or '')[:80].replace(chr(10), ' ')
-        c_resp = (p.get('cb_response') or '')[:80].replace(chr(10), ' ')
-        print(f'        B: {b_resp}...')
-        print(f'        C: {c_resp}...')
+        print(f'    --- BASELINE RESPONSE ---')
+        print(p.get('baseline_response') or '(empty)')
+        print(f'    --- CB MODEL RESPONSE ---')
+        print(p.get('cb_response') or '(empty)')
+        print()
 else:
     # Tool-flip comparison (Fujitsu style)
     emoji = {'attack_success': '❌', 'correct_behavior': '✅', 'no_tool_call': '⚠️', 'other_tool': '❓'}
@@ -298,9 +302,14 @@ else:
         b_out = p.get('baseline_outcome', '?')
         c_out = p.get('cb_outcome', '?')
         label = 'IMP' if b_out == 'attack_success' else 'REG'
-        print(f'    [{i}] {label}: {emoji.get(b_out,\"?\")} {b_out[:8]} -> {emoji.get(c_out,\"?\")} {c_out[:8]}')
-        print(f'        expected={p.get(\"expected_tool\",\"?\")[:20]} simulated={p.get(\"simulated_tool\",\"?\")[:20]}')
-" 2>/dev/null || echo "    (paired output failed)"
+        print(f'    [{i}] {label}: {emoji.get(b_out,\"?\")} {b_out} -> {emoji.get(c_out,\"?\")} {c_out}')
+        print(f'        expected={p.get(\"expected_tool\",\"?\")} simulated={p.get(\"simulated_tool\",\"?\")}')
+        print(f'    --- BASELINE RESPONSE ---')
+        print(p.get('baseline_response') or '(empty)')
+        print(f'    --- CB MODEL RESPONSE ---')
+        print(p.get('cb_response') or '(empty)')
+        print()
+" || echo "    (paired output failed)"
             fi
         fi
 
