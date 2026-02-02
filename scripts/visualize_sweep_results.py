@@ -286,12 +286,12 @@ def print_sample_detail(
             print(f"\n{CYAN}📋 SYSTEM PROMPT (from schema - {YELLOW}may not match dataset{RESET}):{RESET}")
             print(f"   {truncate_text(schema_prompt, max_len)}")
     
-                injections.append({
-                    "message_index": i,
-                    "role": msg.get("role", "unknown"),
-                    "injection_text": match.strip(),
-                    "content_preview": content,
-                })
+            injections.append({
+                "message_index": i,
+                "role": msg.get("role", "unknown"),
+                "injection_text": match.strip(),
+                "content_preview": content,
+            })
     if trace:
         user_query = get_user_query(trace)
         if user_query:
