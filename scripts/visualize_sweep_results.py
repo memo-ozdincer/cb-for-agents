@@ -685,16 +685,16 @@ Examples:
                 "improvements", "regressions", "agentdojo_diff_rate"
             ])
             for r in all_results:
-                fujitsu = r.get("fujitsu", {})
-                agentdojo = r.get("agentdojo", {})
+                fujitsu = r.get("fujitsu") or {}
+                agentdojo = r.get("agentdojo") or {}
                 writer.writerow([
                     r.get("run_name", ""),
-                    fujitsu.get("baseline_asr", ""),
-                    fujitsu.get("cb_asr", ""),
+                    fujitsu.get("baseline_asr", "") if fujitsu else "",
+                    fujitsu.get("cb_asr", "") if fujitsu else "",
                     fujitsu.get("baseline_asr", 0) - fujitsu.get("cb_asr", 0) if fujitsu else "",
-                    fujitsu.get("improvements", ""),
-                    fujitsu.get("regressions", ""),
-                    agentdojo.get("diff_rate", ""),
+                    fujitsu.get("improvements", "") if fujitsu else "",
+                    fujitsu.get("regressions", "") if fujitsu else "",
+                    agentdojo.get("diff_rate", "") if agentdojo else "",
                 ])
         print(f"\nExported results to: {args.csv}")
 
