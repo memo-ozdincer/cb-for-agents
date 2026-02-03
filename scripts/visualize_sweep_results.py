@@ -235,6 +235,44 @@ def format_tool_list(tools: List[Dict[str, Any]]) -> str:
 
 
 # =============================================================================
+# Run Name Parsing
+# =============================================================================
+
+def parse_run_name(run_name: str) -> Tuple[Dict[str, str], Optional[str]]:
+    """
+    Parse run name into hparams and lossmask.
+
+    Example: a5.0_l10_20_assistant_only -> hparams={"a": "5.0"}, lossmask="l10_20_assistant_only"
+    """
+    tokens = run_name.split("_")
+    hparams: Dict[str, str] = {}
+    lossmask: Optional[str] = None
+
+    def is_param_token(token: str) -> bool:
+        return bool(re.match(r"^[A-Za-z]\d", token))
+
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if is_param_token(token):
+            key = token[0]
+            value = token[1:]
+            if key.lower() == "l":
+                lossmask_parts = [token]
+                j = i + 1
+                while j < len(tokens) and not is_param_token(tokens[j]):
+                    lossmask_parts.append(tokens[j])
+                    j += 1
+                lossmask = "_".join(lossmask_parts)
+                i = j
+                continue
+            hparams[key] = value
+        i += 1
+
+    return hparams, lossmask
+
+
+# =============================================================================
 # Sample Display
 # =============================================================================
 
@@ -387,8 +425,11 @@ def analyze_run(
     use_color: bool = True,
 ) -> Dict[str, Any]:
     """Analyze a single run directory."""
+    hparams, lossmask = parse_run_name(run_dir.name)
     results = {
         "run_name": run_dir.name,
+        "hparams": hparams,
+        "lossmask": lossmask,
         "fujitsu": None,
         "agentdojo": None,
     }
@@ -496,6 +537,11 @@ def analyze_run(
 # Summary Display
 # =============================================================================
 
+def get_best_runs(runs: List[Dict[str, Any]], top_n: int = 5) -> List[Dict[str, Any]]:
+    """Return top runs by lowest CB ASR."""
+    valid_runs = [r for r in runs if r.get("fujitsu") and r["fujitsu"].get("cb_asr") is not None]
+    return sorted(valid_runs, key=lambda r: r["fujitsu"]["cb_asr"])[:top_n]
+
 def print_summary_table(runs: List[Dict[str, Any]], use_color: bool = True) -> None:
     """Print a summary table of all runs."""
     BOLD = "\033[1m" if use_color else ""
@@ -503,17 +549,23 @@ def print_summary_table(runs: List[Dict[str, Any]], use_color: bool = True) -> N
     RED = "\033[91m" if use_color else ""
     RESET = "\033[0m" if use_color else ""
     
-    print(f"\n{BOLD}{'='*110}{RESET}")
+    print(f"\n{BOLD}{'='*150}{RESET}")
     print(f"{BOLD}SWEEP RESULTS SUMMARY{RESET}")
-    print(f"{'='*110}")
+    print(f"{'='*150}")
     
     # Header
-    header = f"{'Run Name':<35} {'Base ASR':<12} {'CB ASR':<10} {'Reduction':<12} {'Improved':<10} {'Regressed':<10} {'AgentDojo':<12}"
+    header = (
+        f"{'Run Name':<35} {'Hparams':<18} {'Lossmask':<28} "
+        f"{'Base ASR':<12} {'CB ASR':<10} {'Reduction':<12} {'Improved':<10} {'Regressed':<10} {'AgentDojo':<12}"
+    )
     print(f"{BOLD}{header}{RESET}")
-    print(f"{'-'*110}")
+    print(f"{'-'*150}")
     
     for run in runs:
         run_name = run.get("run_name", "?")
+        hparams = run.get("hparams") or {}
+        lossmask = run.get("lossmask") or "N/A"
+        hparams_str = ",".join(f"{k}{v}" for k, v in sorted(hparams.items())) or "N/A"
         
         fujitsu = run.get("fujitsu", {})
         if fujitsu:
@@ -543,7 +595,10 @@ def print_summary_table(runs: List[Dict[str, Any]], use_color: bool = True) -> N
         else:
             agent_str = "N/A"
         
-        print(f"{run_name:<35} {base_str:<12} {cb_str:<10} {red_str:<12} {improvements:<10} {regressions:<10} {agent_str:<12}")
+        print(
+            f"{run_name:<35} {hparams_str:<18} {lossmask:<28} "
+            f"{base_str:<12} {cb_str:<10} {red_str:<12} {improvements:<10} {regressions:<10} {agent_str:<12}"
+        )
 
 
 def print_best_runs(runs: List[Dict[str, Any]], top_n: int = 5, use_color: bool = True) -> None:
@@ -551,16 +606,11 @@ def print_best_runs(runs: List[Dict[str, Any]], top_n: int = 5, use_color: bool 
     BOLD = "\033[1m" if use_color else ""
     GREEN = "\033[92m" if use_color else ""
     RESET = "\033[0m" if use_color else ""
-    
-    # Filter runs with valid Fujitsu data
-    valid_runs = [r for r in runs if r.get("fujitsu") and r["fujitsu"].get("cb_asr") is not None]
-    
-    if not valid_runs:
+    by_cb_asr = get_best_runs(runs, top_n=top_n)
+    if not by_cb_asr:
         print("\nNo valid runs found with Fujitsu metrics.")
         return
     
-    # Sort by CB ASR (lower is better)
-    by_cb_asr = sorted(valid_runs, key=lambda r: r["fujitsu"]["cb_asr"])
     
     print(f"\n{BOLD}{'='*80}{RESET}")
     print(f"{BOLD}TOP {top_n} RUNS BY LOWEST CB ASR{RESET}")
@@ -568,7 +618,12 @@ def print_best_runs(runs: List[Dict[str, Any]], top_n: int = 5, use_color: bool 
     
     for i, run in enumerate(by_cb_asr[:top_n], 1):
         fujitsu = run["fujitsu"]
+        hparams = run.get("hparams") or {}
+        lossmask = run.get("lossmask") or "N/A"
+        hparams_str = ",".join(f"{k}{v}" for k, v in sorted(hparams.items())) or "N/A"
         print(f"\n{GREEN}{i}. {run['run_name']}{RESET}")
+        print(f"   Hparams: {hparams_str}")
+        print(f"   Lossmask: {lossmask}")
         print(f"   Baseline ASR: {fujitsu['baseline_asr']:.1f}% → "
               f"CB ASR: {fujitsu['cb_asr']:.1f}% "
               f"(Reduction: {fujitsu['baseline_asr'] - fujitsu['cb_asr']:.1f}pp)")
@@ -577,6 +632,14 @@ def print_best_runs(runs: List[Dict[str, Any]], top_n: int = 5, use_color: bool 
         agentdojo = run.get("agentdojo", {})
         if agentdojo:
             print(f"   AgentDojo Diff Rate: {agentdojo.get('diff_rate', 0):.1f}%")
+
+    best_run = by_cb_asr[0]
+    best_hparams = ",".join(
+        f"{k}{v}" for k, v in sorted((best_run.get("hparams") or {}).items())
+    ) or "N/A"
+    best_lossmask = best_run.get("lossmask") or "N/A"
+    print(f"\n{BOLD}BEST HPARAMS:{RESET} {best_hparams}")
+    print(f"{BOLD}BEST LOSSMASK:{RESET} {best_lossmask}")
 
 
 # =============================================================================
@@ -645,6 +708,11 @@ Examples:
         type=int,
         default=5,
         help="Number of top runs to highlight"
+    )
+    parser.add_argument(
+        "--samples-best-only",
+        action="store_true",
+        help="Only show samples from the best run(s) (uses --top-n)"
     )
     parser.add_argument(
         "--run",
@@ -716,12 +784,13 @@ Examples:
     
     # Analyze all runs
     all_results = []
+    show_samples = 0 if args.samples_best_only else args.show_samples
     for run_dir in run_dirs:
         result = analyze_run(
             run_dir,
             traces_dir=traces_dir,
             tool_schema=tool_schema,
-            show_samples=args.show_samples,
+            show_samples=show_samples,
             show_full=args.show_full,
             filter_success=args.filter_success,
             filter_failure=args.filter_failure,
@@ -732,6 +801,23 @@ Examples:
     # Print summary
     print_summary_table(all_results, use_color)
     print_best_runs(all_results, args.top_n, use_color)
+
+    # Optionally show samples only for best runs
+    if args.show_samples > 0 and args.samples_best_only:
+        best_runs = get_best_runs(all_results, top_n=args.top_n)
+        best_names = {r.get("run_name") for r in best_runs}
+        for run_dir in run_dirs:
+            if run_dir.name in best_names:
+                analyze_run(
+                    run_dir,
+                    traces_dir=traces_dir,
+                    tool_schema=tool_schema,
+                    show_samples=args.show_samples,
+                    show_full=args.show_full,
+                    filter_success=args.filter_success,
+                    filter_failure=args.filter_failure,
+                    use_color=use_color,
+                )
     
     # Export to CSV if requested
     if args.csv:
