@@ -2,7 +2,8 @@
 #SBATCH --job-name=etl_a_llmail
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
+#SBATCH --nodes=1
+#SBATCH --gpus-per-node=1
 #SBATCH --time=02:00:00
 #SBATCH --output=/scratch/memoozd/cb-scratch/logs/%x_%j.out
 #SBATCH --error=/scratch/memoozd/cb-scratch/logs/%x_%j.err
