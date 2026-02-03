@@ -22,6 +22,7 @@
 #
 # Total runs = 3 policies * 2 layer configs = 6
 #
+
 # Optional overrides via env vars:
 #   TOTAL_STEPS     - Override training steps (default: 200)
 #   ALPHAS          - Override alpha values (default: "10.0")
@@ -111,12 +112,31 @@ echo ""
 # Input Traces (ALL available data)
 # =============================================================================
 TRACES_DIR="$CB_SCRATCH/data/traces"
+
+# Fujitsu B4 (tool-flip attacks)
 DS_TRACES="$TRACES_DIR/fujitsu_b4_ds.jsonl"
 DR_TRACES="$TRACES_DIR/fujitsu_b4_dr.jsonl"
+
+# AgentDojo (multi-turn agent attacks)
 AGENTDOJO_TRACES="$TRACES_DIR/agentdojo_complete.jsonl"
 
+# LLMail-Inject (email injection attacks) - optional, requires generation first
+LLMAIL_DS_TRACES="$TRACES_DIR/llmail_inject_ds.jsonl"
+LLMAIL_DR_TRACES="$TRACES_DIR/llmail_inject_dr.jsonl"
+
+# Build list of available traces (some may not exist yet)
+TRACE_FILES=("$DS_TRACES" "$DR_TRACES" "$AGENTDOJO_TRACES")
+
+# Add LLMail-Inject if generated
+if [[ -f "$LLMAIL_DS_TRACES" ]]; then
+    TRACE_FILES+=("$LLMAIL_DS_TRACES")
+fi
+if [[ -f "$LLMAIL_DR_TRACES" ]]; then
+    TRACE_FILES+=("$LLMAIL_DR_TRACES")
+fi
+
 echo "Input traces (ALL used for training):"
-for trace in "$DS_TRACES" "$DR_TRACES" "$AGENTDOJO_TRACES"; do
+for trace in "${TRACE_FILES[@]}"; do
     if [[ -f "$trace" ]]; then
         echo "  ✓ $(basename "$trace"): $(wc -l < "$trace") lines"
     else
@@ -225,7 +245,7 @@ for alpha in "${ALPHA_ARRAY[@]}"; do
             echo "Step 1: Creating lossmasks with policy=$policy"
             
             etl_start=$(date +%s)
-            for trace_file in "$DS_TRACES" "$DR_TRACES" "$AGENTDOJO_TRACES"; do
+            for trace_file in "${TRACE_FILES[@]}"; do
                 basename=$(basename "$trace_file" .jsonl)
                 render_out="$RUN_DIR/renders/${basename}.jsonl"
                 lossmask_out="$RUN_DIR/lossmasks/${basename}.jsonl"
