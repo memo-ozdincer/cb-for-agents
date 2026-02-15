@@ -74,6 +74,7 @@ LLMAIL_SKELETON="$TRACES_DIR/llmail_inject_skeleton.jsonl"
 LLMAIL_DS="$TRACES_DIR/llmail_inject_ds.jsonl"
 LLMAIL_DR="$TRACES_DIR/llmail_inject_dr.jsonl"
 LLMAIL_TOOL_SCHEMA="configs/tool_schemas/llmail_inject_v1.json"
+LLMAIL_RAW="$REPO_DIR/data/llmail_inject/raw_submissions_phase1.jsonl"
 
 # Helper to generate DS/DR
 generate_data() {
@@ -82,7 +83,27 @@ generate_data() {
     local ds="$3"
     local dr="$4"
     local schema="$5"
+    local raw_source="${6:-}"  # Optional raw source for ETL_A
 
+    # 1. Check for Skeleton (ETL_A)
+    if [[ ! -f "$skeleton" ]]; then
+        if [[ -n "$raw_source" && -f "$raw_source" ]]; then
+            echo "Generating missing skeleton for $name (ETL_A)..."
+            
+            # Special handling for LLMail vs generic
+            if [[ "$name" == "LLMail-Inject" ]]; then
+                python src/schemas/tools/ETL_A.py \
+                    --llmail-inject "$raw_source" \
+                    --output "$skeleton" \
+                    --split train \
+                    --tool-schema "$schema"
+            else
+                echo "WARNING: No ETL_A logic defined for $name in simple script."
+            fi
+        fi
+    fi
+
+    # 2. Check for DS/DR (Generation)
     if [[ ! -f "$ds" || ! -f "$dr" ]]; then
         if [[ -f "$skeleton" ]]; then
             echo "Generating missing $name data (DS/DR)..."
@@ -122,7 +143,7 @@ generate_data() {
 
 # Run generation
 generate_data "Fujitsu B4" "$FUJITSU_SKELETON" "$FUJITSU_DS" "$FUJITSU_DR" "$TOOL_SCHEMA"
-generate_data "LLMail-Inject" "$LLMAIL_SKELETON" "$LLMAIL_DS" "$LLMAIL_DR" "$LLMAIL_TOOL_SCHEMA"
+generate_data "LLMail-Inject" "$LLMAIL_SKELETON" "$LLMAIL_DS" "$LLMAIL_DR" "$LLMAIL_TOOL_SCHEMA" "$LLMAIL_RAW"
 
 echo ""
 echo "Data preparation complete. Launching sweep..."
