@@ -1288,22 +1288,32 @@ class CircuitBreakerTrainer:
             combined_student_logits = student_outputs.logits  # Save for KL
 
             if needs_frozen:
-                # Single forward through frozen model (no grad)
-                self.frozen_extractor.clear()
+                # Split frozen pass to save memory (no grad, so DDP safe)
                 with torch.no_grad():
-                    teacher_outputs = self.frozen_model(
-                        input_ids=combined_input_ids,
-                        attention_mask=combined_attention_mask,
+                    # 1. Harmful
+                    self.frozen_extractor.clear()
+                    _ = self.frozen_model(
+                        input_ids=harmful_input_ids,
+                        attention_mask=harmful_attention_mask,
                         use_cache=False,
-                        return_dict=True,
                     )
-                    combined_frozen_reps = self.frozen_extractor.get_representations()
-                    combined_teacher_logits = teacher_outputs.logits
-            else:
-                combined_frozen_reps = {}
-                combined_teacher_logits = None
+                    harmful_frozen_reps = self.frozen_extractor.get_representations().copy()
 
-            # Split representations by batch size
+                    # 2. Benign
+                    self.frozen_extractor.clear()
+                    teacher_outputs_b = self.frozen_model(
+                        input_ids=benign_input_ids,
+                        attention_mask=benign_attention_mask,
+                        use_cache=False,
+                    )
+                    benign_frozen_reps = self.frozen_extractor.get_representations().copy()
+                    teacher_logits_benign = teacher_outputs_b.logits
+            else:
+                harmful_frozen_reps = {}
+                benign_frozen_reps = {}
+                teacher_logits_benign = None
+
+            # Split student representations by batch size
             harmful_model_reps = {
                 layer: reps[:harmful_batch_size]
                 for layer, reps in combined_model_reps.items()
@@ -1313,22 +1323,8 @@ class CircuitBreakerTrainer:
                 for layer, reps in combined_model_reps.items()
             }
 
-            harmful_frozen_reps = {
-                layer: reps[:harmful_batch_size]
-                for layer, reps in combined_frozen_reps.items()
-            }
-            benign_frozen_reps = {
-                layer: reps[harmful_batch_size:]
-                for layer, reps in combined_frozen_reps.items()
-            }
-
-            # Split logits
+            # Split student logits
             student_logits_benign = combined_student_logits[harmful_batch_size:]
-            teacher_logits_benign = (
-                combined_teacher_logits[harmful_batch_size:]
-                if combined_teacher_logits is not None
-                else None
-            )
 
         else:
             # Single forward with hidden_states output
@@ -1345,20 +1341,38 @@ class CircuitBreakerTrainer:
 
             if needs_frozen:
                 with torch.no_grad():
-                    frozen_outputs = self.frozen_model(
-                        input_ids=combined_input_ids,
-                        attention_mask=combined_attention_mask,
+                    # 1. Harmful
+                    frozen_outputs_h = self.frozen_model(
+                        input_ids=harmful_input_ids,
+                        attention_mask=harmful_attention_mask,
                         output_hidden_states=True,
                         use_cache=False,
                         return_dict=True,
                     )
-                    combined_frozen_reps = _select_hidden_states(
-                        frozen_outputs, self.config.cb_target_layers
+                    harmful_frozen_reps = _select_hidden_states(
+                        frozen_outputs_h, self.config.cb_target_layers
                     )
-                    combined_teacher_logits = frozen_outputs.logits
-                del frozen_outputs
+                    del frozen_outputs_h
 
-            # Split representations by batch size
+                    # 2. Benign
+                    frozen_outputs_b = self.frozen_model(
+                        input_ids=benign_input_ids,
+                        attention_mask=benign_attention_mask,
+                        output_hidden_states=True,
+                        use_cache=False,
+                        return_dict=True,
+                    )
+                    benign_frozen_reps = _select_hidden_states(
+                        frozen_outputs_b, self.config.cb_target_layers
+                    )
+                    teacher_logits_benign = frozen_outputs_b.logits
+                    del frozen_outputs_b
+            else:
+                harmful_frozen_reps = {}
+                benign_frozen_reps = {}
+                teacher_logits_benign = None
+
+            # Split student representations by batch size
             harmful_model_reps = {
                 layer: reps[:harmful_batch_size]
                 for layer, reps in combined_model_reps.items()
@@ -1368,22 +1382,8 @@ class CircuitBreakerTrainer:
                 for layer, reps in combined_model_reps.items()
             }
 
-            harmful_frozen_reps = {
-                layer: reps[:harmful_batch_size]
-                for layer, reps in combined_frozen_reps.items()
-            }
-            benign_frozen_reps = {
-                layer: reps[harmful_batch_size:]
-                for layer, reps in combined_frozen_reps.items()
-            }
-
-            # Split logits
+            # Split student logits
             student_logits_benign = combined_student_logits[harmful_batch_size:]
-            teacher_logits_benign = (
-                combined_teacher_logits[harmful_batch_size:]
-                if combined_teacher_logits is not None
-                else None
-            )
 
         # === Compute Losses ===
         reroute_metrics: Optional[Dict[str, float]] = None
