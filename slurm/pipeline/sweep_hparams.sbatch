@@ -204,12 +204,16 @@ fi
 echo ""
 
 # =============================================================================
-# Resolve Tokenizer (same as sweep_policies.sbatch)
+# Resolve Tokenizer / Model
 # =============================================================================
-TOKENIZER="meta-llama/Llama-3.1-8B-Instruct"
-echo "Resolving tokenizer '$TOKENIZER' to local cache path..."
+MODEL_ID="${MODEL_ID:-meta-llama/Llama-3.1-8B-Instruct}"
+PRESET="${PRESET:-llama-3.1-8b-instruct}"
+TOKENIZER="$MODEL_ID"
+echo "Resolving model '$MODEL_ID' to local cache path..."
 
-MODEL_CACHE_DIR="$HF_HUB_CACHE/models--meta-llama--Llama-3.1-8B-Instruct"
+# Convert model ID to HF cache directory format (org--model)
+MODEL_CACHE_NAME=$(echo "$MODEL_ID" | tr '/' '--')
+MODEL_CACHE_DIR="$HF_HUB_CACHE/models--${MODEL_CACHE_NAME}"
 SNAPSHOT_ROOT="$MODEL_CACHE_DIR/snapshots"
 
 if [[ -d "$SNAPSHOT_ROOT" ]]; then
@@ -394,7 +398,7 @@ print(total)
             
             # Build training args (matching sweep_policies.sbatch exactly)
             TRAIN_ARGS=(
-                --preset "llama-3.1-8b-instruct"
+                --preset "$PRESET"
                 --model "$TOKENIZER"
                 --output-dir "$RUN_DIR/model"
                 --total-steps "$TOTAL_STEPS"
@@ -471,6 +475,7 @@ print(total)
                         --tool-schema "$REPO_DIR/configs/tool_schemas/b4_standard_v1.json" \
                         --output "$FUJITSU_OUTPUT" \
                         --limit "$LIMIT_EVAL" \
+                        --merge-adapter \
                         --dtype "$DTYPE" 2>&1 | tee -a "$RUN_DIR/eval/fujitsu.log"
                     
                     # Print Fujitsu examples
@@ -523,6 +528,7 @@ PYEOF
                             --tool-schema "$LLMAIL_TOOL_SCHEMA" \
                             --output "$LLMAIL_OUTPUT" \
                             --limit "$LIMIT_EVAL" \
+                            --merge-adapter \
                             --dtype "$DTYPE" 2>&1 | tee -a "$RUN_DIR/eval/llmail.log"
 
                         # Print LLMail examples
@@ -578,6 +584,7 @@ PYEOF
                             --output "$AGENTDOJO_OUTPUT" \
                             --use-sample-context \
                             --limit "$LIMIT_EVAL" \
+                            --merge-adapter \
                             --dtype "$DTYPE" 2>&1 | tee -a "$RUN_DIR/eval/agentdojo.log"
                         
                         # Print AgentDojo examples

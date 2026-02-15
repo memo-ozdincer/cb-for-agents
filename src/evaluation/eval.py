@@ -120,6 +120,7 @@ def load_model_and_tokenizer(
     adapter_path: Optional[str] = None,
     device: str = "auto",
     torch_dtype: torch.dtype = torch.bfloat16,
+    merge_adapter: bool = False,
 ):
     """Load model and tokenizer, optionally with LoRA adapter."""
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -204,8 +205,11 @@ def load_model_and_tokenizer(
         except Exception as e:
             logger.warning(f"  Could not verify adapter: {e}")
         
-        # Optionally merge for faster inference
-        # model = model.merge_and_unload()
+        # Merge adapter into base weights for faster inference (no PEFT overhead)
+        if merge_adapter:
+            logger.info("  Merging adapter into base model for faster inference...")
+            model = model.merge_and_unload()
+            logger.info("  Adapter merged successfully")
     
     model.eval()
     return model, tokenizer
@@ -499,6 +503,7 @@ def _evaluate_model_on_samples(
     torch_dtype: torch.dtype,
     verbose: bool,
     use_sample_context: bool = False,
+    merge_adapter: bool = False,
 ) -> Dict[str, Any]:
     if device.startswith("cuda") and torch.cuda.is_available():
         try:
@@ -507,7 +512,8 @@ def _evaluate_model_on_samples(
             pass
 
     model, tokenizer = load_model_and_tokenizer(
-        model_path, adapter_path=adapter_path, device=device, torch_dtype=torch_dtype
+        model_path, adapter_path=adapter_path, device=device, torch_dtype=torch_dtype,
+        merge_adapter=merge_adapter
     )
 
     # Log evaluation context
@@ -646,6 +652,7 @@ def _worker_eval(payload: Tuple[Any, ...]) -> Dict[str, Any]:
         torch_dtype,
         verbose,
         use_sample_context,
+        merge_adapter,
     ) = payload
     return _evaluate_model_on_samples(
         model_path=model_path,
@@ -657,6 +664,7 @@ def _worker_eval(payload: Tuple[Any, ...]) -> Dict[str, Any]:
         torch_dtype=torch_dtype,
         verbose=verbose,
         use_sample_context=use_sample_context,
+        merge_adapter=merge_adapter,
     )
 
 
@@ -1616,6 +1624,7 @@ def run_mvp_evaluation(
     gpu_ids: Optional[List[int]] = None,
     eval_samples: Optional[List[Dict[str, Any]]] = None,
     use_sample_context: bool = False,
+    merge_adapter: bool = False,
 ) -> Dict[str, Any]:
     """
     Run full MVP evaluation suite.
@@ -1676,6 +1685,7 @@ def run_mvp_evaluation(
                 torch_dtype=torch_dtype,
                 verbose=verbose,
                 use_sample_context=use_sample_context,
+                merge_adapter=merge_adapter,
             )
 
         if not torch.cuda.is_available():
@@ -1699,6 +1709,7 @@ def run_mvp_evaluation(
                     torch_dtype,
                     False,
                     use_sample_context,
+                    merge_adapter,
                 )
             )
 
@@ -1993,7 +2004,12 @@ def main():
         default=None,
         help="Print detailed info for sample N (0-indexed) and exit",
     )
-    
+    parser.add_argument(
+        "--merge-adapter",
+        action="store_true",
+        help="Merge LoRA adapter into base model before eval (faster inference, more VRAM at load)",
+    )
+
     args = parser.parse_args()
     
     # Validate arguments
@@ -2070,6 +2086,7 @@ def main():
         gpu_ids=gpu_ids,
         eval_samples=eval_samples,
         use_sample_context=args.use_sample_context,
+        merge_adapter=args.merge_adapter,
     )
     
     # Clean up temp file

@@ -62,11 +62,13 @@ export LIMIT_EVAL="${LIMIT_EVAL:-100}"
 export NUM_EXAMPLES="${NUM_EXAMPLES:-50}"
 export SHOW_EXAMPLES="${SHOW_EXAMPLES:-true}"
 export BATCH_SIZE="${BATCH_SIZE:-1}"
+export GRAD_ACCUM="${GRAD_ACCUM:-4}"
 
 echo "Starting sweep_hparams_simple.sbatch..."
 echo "  ALPHAS: ${ALPHAS}"
 echo "  LAYER_CONFIGS: ${LAYER_CONFIGS}"
 echo "  POLICIES: ${POLICIES}"
+echo "  BATCH_SIZE: ${BATCH_SIZE} (effective: $((BATCH_SIZE * GRAD_ACCUM)) with grad_accum=${GRAD_ACCUM})"
 echo "  Datasets: Fujitsu, AgentDojo, LLMail (auto-detected)"
 echo "  Logging: Compatible with scripts/visualize_sweep_results.py"
 
@@ -86,9 +88,12 @@ export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 
 # Resolve Tokenizer to Local Cache (for generate_completions.py)
-MODEL_NAME="meta-llama/Llama-3.1-8B-Instruct"
-MODEL_CACHE_DIR="$HF_HUB_CACHE/models--meta-llama--Llama-3.1-8B-Instruct"
-SNAPSHOT_ROOT="$MODEL_git/snapshots"
+export MODEL_ID="${MODEL_ID:-meta-llama/Llama-3.1-8B-Instruct}"
+export PRESET="${PRESET:-llama-3.1-8b-instruct}"
+MODEL_NAME="$MODEL_ID"
+MODEL_CACHE_NAME=$(echo "$MODEL_ID" | tr '/' '--')
+MODEL_CACHE_DIR="$HF_HUB_CACHE/models--${MODEL_CACHE_NAME}"
+SNAPSHOT_ROOT="$MODEL_CACHE_DIR/snapshots"
 
 if [[ -d "$SNAPSHOT_ROOT" ]]; then
     SNAPSHOT_PATH=$(ls -1td "$SNAPSHOT_ROOT"/* 2>/dev/null | head -n 1)
