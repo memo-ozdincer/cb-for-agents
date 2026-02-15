@@ -970,10 +970,10 @@ class CircuitBreakerTrainer:
         return asdict(self.config)
     
     def _load_models(self):
-        """Load trainable model with LoRA adapters and a separate frozen model.
-
-        We keep the frozen model fully separate to avoid DDP parameter reuse
-        issues when doing multiple forward passes per step.
+        """Load trainable model with LoRA adapters.
+        
+        We reuse the same base model for the frozen pass by disabling adapters,
+        saving ~50% VRAM compared to loading a separate frozen copy.
         """
         self.accelerator.print(f"Loading model: {self.config.base_model}")
 
@@ -1031,22 +1031,7 @@ class CircuitBreakerTrainer:
         self.model = get_peft_model(self.model, lora_config)
         self.model.print_trainable_parameters()
 
-        # Load separate frozen model WITHOUT LoRA (kept outside DDP)
-        # Use same device_map policy as trainable model.
-        self.frozen_model = AutoModelForCausalLM.from_pretrained(
-            model_path,
-            torch_dtype=torch_dtype,
-            device_map=device_map,
-            trust_remote_code=True,
-            token=hf_token,
-            local_files_only=offline_mode,
-        )
-        self.frozen_model.eval()
-        for param in self.frozen_model.parameters():
-            param.requires_grad = False
-
-        # Track how frozen model was placed for later device handling
-        self._frozen_device_map = device_map
+        # No separate frozen model loaded - we reuse self.model
     
     def _setup_data(self):
         """Setup dataset and dataloader."""
@@ -1116,15 +1101,11 @@ class CircuitBreakerTrainer:
         ):
             self.model._set_static_graph()
             self.accelerator.print("✓ Set static graph for DDP (multi-GPU training)")
-
-        # Place frozen model on each device (no DDP wrapper)
-        if self.frozen_model is not None and self._frozen_device_map is None:
-            self.frozen_model = self.frozen_model.to(self.accelerator.device)
     
     def _setup_extractors(self):
         """Setup representation extractors.
 
-        We keep separate extractors for trainable and frozen models.
+        We use the same extractor for both passes (train/frozen) since we reuse the model.
         """
         method = (self.config.representation_extraction or "").strip().lower()
         if method not in {"hidden_states", "hooks"}:
@@ -1142,9 +1123,8 @@ class CircuitBreakerTrainer:
             self.model_extractor = RepresentationExtractor(
                 unwrapped_model, self.config.cb_target_layers
             )
-            self.frozen_extractor = RepresentationExtractor(
-                self.frozen_model, self.config.cb_target_layers
-            )
+            # Reuse the same extractor since we reuse the model object
+            self.frozen_extractor = self.model_extractor
         else:
             # No hooks required.
             self.model_extractor = None
@@ -1289,25 +1269,35 @@ class CircuitBreakerTrainer:
 
             if needs_frozen:
                 # Split frozen pass to save memory (no grad, so DDP safe)
+                # Reuse self.model (unwrapped) with adapters disabled
+                unwrapped_model = self.accelerator.unwrap_model(self.model)
+                
                 with torch.no_grad():
-                    # 1. Harmful
-                    self.frozen_extractor.clear()
-                    _ = self.frozen_model(
-                        input_ids=harmful_input_ids,
-                        attention_mask=harmful_attention_mask,
-                        use_cache=False,
-                    )
-                    harmful_frozen_reps = self.frozen_extractor.get_representations().copy()
+                    with unwrapped_model.disable_adapter():
+                        # 1. Harmful
+                        if self._rep_extraction_method == "hooks":
+                            self.model_extractor.clear()
+                        
+                        _ = unwrapped_model(
+                            input_ids=harmful_input_ids,
+                            attention_mask=harmful_attention_mask,
+                            use_cache=False,
+                        )
+                        harmful_frozen_reps = self.model_extractor.get_representations().copy()
+                        torch.cuda.empty_cache()
 
-                    # 2. Benign
-                    self.frozen_extractor.clear()
-                    teacher_outputs_b = self.frozen_model(
-                        input_ids=benign_input_ids,
-                        attention_mask=benign_attention_mask,
-                        use_cache=False,
-                    )
-                    benign_frozen_reps = self.frozen_extractor.get_representations().copy()
-                    teacher_logits_benign = teacher_outputs_b.logits
+                        # 2. Benign
+                        if self._rep_extraction_method == "hooks":
+                            self.model_extractor.clear()
+                            
+                        teacher_outputs_b = unwrapped_model(
+                            input_ids=benign_input_ids,
+                            attention_mask=benign_attention_mask,
+                            use_cache=False,
+                        )
+                        benign_frozen_reps = self.model_extractor.get_representations().copy()
+                        teacher_logits_benign = teacher_outputs_b.logits
+                        torch.cuda.empty_cache()
             else:
                 harmful_frozen_reps = {}
                 benign_frozen_reps = {}
@@ -1340,42 +1330,45 @@ class CircuitBreakerTrainer:
             del outputs
 
             if needs_frozen:
+                # Reuse self.model (unwrapped) with adapters disabled
+                unwrapped_model = self.accelerator.unwrap_model(self.model)
+                
                 with torch.no_grad():
-                    # 1. Harmful - OPTIMIZED: Skip LM Head
-                    # Call .model directly to avoid computing logits (saves memory)
-                    # Check for PEFT/base model structure
-                    if hasattr(self.frozen_model, "model"):
-                        frozen_base = self.frozen_model.model
-                    else:
-                        frozen_base = self.frozen_model
+                    with unwrapped_model.disable_adapter():
+                        # 1. Harmful - OPTIMIZED: Skip LM Head
+                        # Call .model directly to avoid computing logits (saves memory)
+                        if hasattr(unwrapped_model, "model"):
+                            frozen_base = unwrapped_model.model
+                        else:
+                            frozen_base = unwrapped_model
 
-                    frozen_outputs_h = frozen_base(
-                        input_ids=harmful_input_ids,
-                        attention_mask=harmful_attention_mask,
-                        output_hidden_states=True,
-                        use_cache=False,
-                        return_dict=True,
-                    )
-                    harmful_frozen_reps = _select_hidden_states(
-                        frozen_outputs_h, self.config.cb_target_layers
-                    )
-                    del frozen_outputs_h
-                    torch.cuda.empty_cache()
+                        frozen_outputs_h = frozen_base(
+                            input_ids=harmful_input_ids,
+                            attention_mask=harmful_attention_mask,
+                            output_hidden_states=True,
+                            use_cache=False,
+                            return_dict=True,
+                        )
+                        harmful_frozen_reps = _select_hidden_states(
+                            frozen_outputs_h, self.config.cb_target_layers
+                        )
+                        del frozen_outputs_h
+                        torch.cuda.empty_cache()
 
-                    # 2. Benign - Needs Logits (Keep full forward)
-                    frozen_outputs_b = self.frozen_model(
-                        input_ids=benign_input_ids,
-                        attention_mask=benign_attention_mask,
-                        output_hidden_states=True,
-                        use_cache=False,
-                        return_dict=True,
-                    )
-                    benign_frozen_reps = _select_hidden_states(
-                        frozen_outputs_b, self.config.cb_target_layers
-                    )
-                    teacher_logits_benign = frozen_outputs_b.logits
-                    del frozen_outputs_b
-                    torch.cuda.empty_cache()
+                        # 2. Benign - Needs Logits (Keep full forward)
+                        frozen_outputs_b = unwrapped_model(
+                            input_ids=benign_input_ids,
+                            attention_mask=benign_attention_mask,
+                            output_hidden_states=True,
+                            use_cache=False,
+                            return_dict=True,
+                        )
+                        benign_frozen_reps = _select_hidden_states(
+                            frozen_outputs_b, self.config.cb_target_layers
+                        )
+                        teacher_logits_benign = frozen_outputs_b.logits
+                        del frozen_outputs_b
+                        torch.cuda.empty_cache()
             else:
                 harmful_frozen_reps = {}
                 benign_frozen_reps = {}
@@ -1814,5 +1807,4 @@ class CircuitBreakerTrainer:
         if getattr(self, "_rep_extraction_method", None) == "hooks":
             if self.model_extractor is not None:
                 self.model_extractor.remove_hooks()
-            if self.frozen_extractor is not None:
-                self.frozen_extractor.remove_hooks()
+            # frozen_extractor is alias to model_extractor, so no need to remove twice
