@@ -55,22 +55,19 @@ if [[ ! -f "$SWEEP_SCRIPT" ]]; then
 fi
 
 export TOTAL_STEPS="${TOTAL_STEPS:-200}"
-export ALPHAS="${ALPHAS:-20.0}"
+export ALPHAS="${ALPHAS:-5.0,10.0,15.0}"
 export LAYER_CONFIGS="${LAYER_CONFIGS:-10,20}"
 export POLICIES="${POLICIES:-cb_full_sequence}"
-export LIMIT_EVAL="${LIMIT_EVAL:-50}"
+export LIMIT_EVAL="${LIMIT_EVAL:-100}"
+export LIMIT_GEN="${LIMIT_GEN:-5000}"
 export NUM_EXAMPLES="${NUM_EXAMPLES:-50}"
 export SHOW_EXAMPLES="${SHOW_EXAMPLES:-true}"
 export BATCH_SIZE="${BATCH_SIZE:-1}"
-export GRAD_ACCUM="${GRAD_ACCUM:-4}"
-export MAX_MODEL_LEN="${MAX_MODEL_LEN:-32768}"
-export LLMAIL_LIMIT="${LLMAIL_LIMIT:-}"  # e.g. LLMAIL_LIMIT=3000 to cap LLMail samples
 
 echo "Starting sweep_hparams_simple.sbatch..."
 echo "  ALPHAS: ${ALPHAS}"
 echo "  LAYER_CONFIGS: ${LAYER_CONFIGS}"
 echo "  POLICIES: ${POLICIES}"
-echo "  BATCH_SIZE: ${BATCH_SIZE} (effective: $((BATCH_SIZE * GRAD_ACCUM)) with grad_accum=${GRAD_ACCUM})"
 echo "  Datasets: Fujitsu, AgentDojo, LLMail (auto-detected)"
 echo "  Logging: Compatible with scripts/visualize_sweep_results.py"
 
@@ -90,11 +87,8 @@ export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 
 # Resolve Tokenizer to Local Cache (for generate_completions.py)
-export MODEL_ID="${MODEL_ID:-meta-llama/Llama-3.1-8B-Instruct}"
-export PRESET="${PRESET:-llama-3.1-8b-instruct}"
-MODEL_NAME="$MODEL_ID"
-MODEL_CACHE_NAME=$(echo "$MODEL_ID" | tr '/' '--')
-MODEL_CACHE_DIR="$HF_HUB_CACHE/models--${MODEL_CACHE_NAME}"
+MODEL_NAME="meta-llama/Llama-3.1-8B-Instruct"
+MODEL_CACHE_DIR="$HF_HUB_CACHE/models--meta-llama--Llama-3.1-8B-Instruct"
 SNAPSHOT_ROOT="$MODEL_CACHE_DIR/snapshots"
 
 if [[ -d "$SNAPSHOT_ROOT" ]]; then
@@ -148,16 +142,11 @@ generate_data() {
             
             # Special handling for LLMail vs generic
             if [[ "$name" == "LLMail-Inject" ]]; then
-                LIMIT_ARGS=()
-                if [[ -n "$LLMAIL_LIMIT" ]]; then
-                    LIMIT_ARGS+=(--llmail-inject-limit "$LLMAIL_LIMIT")
-                fi
                 python src/schemas/tools/ETL_A.py \
                     --llmail-inject "$raw_source" \
                     --output "$skeleton" \
                     --split train \
-                    --tool-schema "$schema" \
-                    "${LIMIT_ARGS[@]}"
+                    --tool-schema "$schema"
             else
                 echo "WARNING: No ETL_A logic defined for $name in simple script."
             fi
@@ -168,14 +157,7 @@ generate_data() {
     if [[ ! -f "$ds" || ! -f "$dr" ]]; then
         if [[ -f "$skeleton" ]]; then
             echo "Generating missing $name data (DS/DR)..."
-
-            # Build limit args for LLMail
-            GEN_LIMIT_ARGS=()
-            if [[ -n "$LLMAIL_LIMIT" && "$name" == "LLMail-Inject" ]]; then
-                GEN_LIMIT_ARGS+=(--limit "$LLMAIL_LIMIT")
-                echo "  Limiting $name to $LLMAIL_LIMIT samples"
-            fi
-
+            
             # Generate DS (Harmful)
             if [[ ! -f "$ds" ]]; then
                 echo "  Generating DS (Harmful)..."
@@ -186,11 +168,10 @@ generate_data() {
                     --tool-schema "$schema" \
                     --mode ds \
                     --temperature-ds 0.7 \
-                    --max-model-len "$MAX_MODEL_LEN" \
                     --use-vllm \
-                    "${GEN_LIMIT_ARGS[@]}"
+                    --limit "$LIMIT_GEN"
             fi
-
+            
             # Generate DR (Benign)
             if [[ ! -f "$dr" ]]; then
                 echo "  Generating DR (Benign)..."
@@ -201,9 +182,8 @@ generate_data() {
                     --tool-schema "$schema" \
                     --mode dr \
                     --temperature-dr 0.3 \
-                    --max-model-len "$MAX_MODEL_LEN" \
                     --use-vllm \
-                    "${GEN_LIMIT_ARGS[@]}"
+                    --limit "$LIMIT_GEN"
             fi
         else
             echo "WARNING: Skeleton file for $name not found at $skeleton. Cannot generate data."
