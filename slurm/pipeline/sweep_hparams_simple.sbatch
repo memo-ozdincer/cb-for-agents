@@ -55,7 +55,7 @@ if [[ ! -f "$SWEEP_SCRIPT" ]]; then
 fi
 
 export TOTAL_STEPS="${TOTAL_STEPS:-200}"
-export ALPHAS="${ALPHAS:-5.0,20.0}"
+export ALPHAS="${ALPHAS:-20.0}"
 export LAYER_CONFIGS="${LAYER_CONFIGS:-10,20}"
 export POLICIES="${POLICIES:-cb_full_sequence}"
 export LIMIT_EVAL="${LIMIT_EVAL:-50}"
